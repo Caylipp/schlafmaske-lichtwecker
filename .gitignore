@@ -1,0 +1,13 @@
+# Zugangsdaten
+secrets.h
+
+# Build-Artefakte (Arduino IDE / arduino-cli / PlatformIO)
+build/
+*.bin
+*.elf
+*.map
+.pio/
+
+# Editor / OS
+.vscode/
+.DS_Store
