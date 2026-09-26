@@ -1,39 +1,47 @@
 # Schlafmaske-Lichtwecker
 
-Eine Schlafmaske mit eingebauten LEDs, die zur Weckzeit einen Sonnenaufgang simuliert und so sanft weckt.
+Eine Schlafmaske mit eingebauten LEDs, die vor der Weckzeit einen Sonnenaufgang simuliert und so sanft weckt.
 Die Steuerung übernimmt ein ESP32-C3 mit einem NeoPixel-Streifen (WS2812). Die Uhrzeit kommt per WLAN über NTP. Zwischen den Weckzeiten schläft der Controller im Deep Sleep.
 
 Die Produktidee, eine Bewertung und weitere Ideen stehen in [concept.md](concept.md).
 
 ## Stand
 
-**Status: funktionsfähiger Prototyp (v1), zuletzt bearbeitet im August 2026.**
+**Status: Prototyp. v1 lief auf Hardware; v1.1 (Bugfixes) ist kompiliert, aber noch nicht auf Hardware getestet.**
 
-Der aktuelle Sketch liegt in [`lichtwecker/`](lichtwecker/). Der Git-Tag `v1.0` markiert den Originalstand vom 20.08.2026, nur die WLAN-Daten sind in `secrets.h` ausgelagert.
+Der aktuelle Sketch liegt in [`lichtwecker/`](lichtwecker/).
 
-Früher lagen zwei Ordner nebeneinander, `version1` (20.08.) und `version1_1` (25.08.). Beide waren byte-identisch, weil `version1_1` nur als Kopie für eine geplante v1.1 angelegt wurde. Sie wurden zu `lichtwecker/` zusammengeführt. Versionen werden künftig über Git-Tags markiert (`git tag v1.1`), nicht über kopierte Ordner.
+| Version | Stand |
+|---|---|
+| `v1.0` (Git-Tag) | Originalstand vom 20.08.2026, nur die WLAN-Daten sind in `secrets.h` ausgelagert |
+| `main` | v1.1: Bugfixes aus dem Code-Review, siehe [Änderungen in v1.1](#änderungen-in-v11) |
+
+Früher lagen zwei Ordner nebeneinander, `version1` (20.08.) und `version1_1` (25.08.). Beide waren byte-identisch, weil `version1_1` nur als Kopie für eine geplante v1.1 angelegt wurde. Sie wurden zu `lichtwecker/` zusammengeführt. Versionen werden jetzt über Git-Tags markiert, nicht über kopierte Ordner.
 
 ## Funktionsweise
 
 ```
 Einschalten / Aufwachen
-  └─ 3 s warten (Upload-Fenster für USB)
-  └─ Uhrzeit holen: WLAN + NTP ─(Fehler)─> RTC-Fallback ─(Fehler)─> 60 s schlafen, neu versuchen
-  └─ liegt jetzt im Fenster Weckzeit −5 min … +5 min?
-        ja   ─> bis zur Weckzeit warten ─> Sonnenaufgang abspielen
+  └─ nur nach Reset: 3 s warten (Upload-Fenster für USB)
+  └─ Uhrzeit holen: WLAN + NTP ─(Fehler)─> interne RTC-Zeit ─(ungültig)─> 60 s schlafen, neu versuchen
+  └─ steht der Sonnenaufgang in ≤ 2 min an (oder hat vor ≤ 10 min begonnen)?
+        ja   ─> bis zum Start warten ─> Sonnenaufgang (bei Verspätung passend einsteigen)
         nein ─> nichts tun
-  └─ Deep Sleep bis 5 min vor der nächsten Weckzeit (Timer; zusätzlich Weck-Taste)
+  └─ Deep Sleep bis 2 min vor dem nächsten Sonnenaufgang
 ```
 
-**Sonnenaufgang** (ab der Weckzeit, per Taste abbrechbar):
+**Ablauf des Weckers** mit den Standardwerten (Weckzeit 05:30):
 
 | Phase | Zeit | Licht |
 |---|---|---|
-| 1 | 0–15 min | Rot → Orange, Helligkeit 3 → 40 % von `MAX_BRIGHTNESS` |
-| 2 | 15–25 min | Orange → Pfirsich, 40 → 80 % |
-| 3 | 25–30 min | → Warmweiß/Weiß, 80 → 100 % |
-| 4 | 30–60 min | Weiß pulsierend |
-| – | ab 60 min | aus, zurück in den Deep Sleep |
+| 1 | 05:00–05:15 | Rot → Orange |
+| 2 | 05:15–05:25 | Orange → Pfirsich |
+| 3 | 05:25–05:30 | → Weiß |
+| 4 | 05:30–06:00 | Weckzeit erreicht: Weiß pulsierend |
+| – | ab 06:00 | aus, zurück in den Deep Sleep |
+
+In den Phasen 1 bis 3 steigt die Helligkeit gleichmäßig und gammakorrigiert von 0 auf `MAX_BRIGHTNESS`.
+**Taste während des Weckers:** Der Wecker wird beendet. **Taste in den 2 min davor:** Der Wecker wird für heute übersprungen.
 
 Im `TEST_MODE` gilt 1 s = 1 min, und das Gerät schläft jeweils nur 10 s.
 
@@ -44,19 +52,24 @@ Im `TEST_MODE` gilt 1 s = 1 min, und das Gerät schläft jeweils nur 10 s.
 | Mikrocontroller | ESP32-C3 (z. B. ESP32-C3 SuperMini / DevKitM-1) |
 | LEDs | 32× WS2812/NeoPixel (GRB, 800 kHz), Daten an **GPIO 2** |
 | Taster | BOOT-Taster an **GPIO 9** (aktiv LOW, interner Pull-up) |
+| LED-Abschaltung | optional: MOSFET/Load-Switch an `LED_POWER_PIN` (Standard: keiner) |
 | Stromversorgung | nicht dokumentiert, vermutlich LiPo oder USB |
 
 Die maximale Helligkeit ist per Software auf 76/255 (≈ 30 %) begrenzt. Bei voll weißem Licht ziehen 32 LEDs trotzdem noch ungefähr **0,5–0,6 A**.
+
+> **Wichtig für den Akkubetrieb:**
+> - **Die BOOT-Taste (GPIO 9) kann den Chip nicht aus dem Deep Sleep wecken**, das geht beim ESP32-C3 nur an GPIO 0–5. Während der Wecker läuft, funktioniert sie trotzdem. Wer per Taste aufwecken will, schließt einen Taster an GPIO 0–5 an und stellt `BUTTON_PIN` um.
+> - **Ohne `LED_POWER_PIN` ziehen die LEDs auch im Deep Sleep Strom**, je nach Typ ~0,5–1 mA pro LED, zusammen ~15–30 mA. Ein kleiner Akku ist damit in wenigen Tagen leer. Abhilfe: LED-Versorgung über einen MOSFET schalten und dessen Gate an `LED_POWER_PIN` legen.
 
 ## Einrichtung
 
 ### Benötigte Tools
 
-- **Arduino IDE 2.x** (installiert) *oder* `arduino-cli` *oder* PlatformIO in VS Code
-- **ESP32-Board-Paket von Espressif**. *Fehlt auf diesem Mac noch* (installiert ist bisher nur AVR).
-  Unter Einstellungen → „Zusätzliche Boardverwalter-URLs“ eintragen:
+- **Arduino IDE 2.x** *oder* `arduino-cli` (beide installiert) *oder* PlatformIO in VS Code
+- **ESP32-Board-Paket von Espressif** (installiert)
+  In der IDE unter Einstellungen → „Zusätzliche Boardverwalter-URLs“:
   `https://espressif.github.io/arduino-esp32/package_esp32_index.json`, dann im Boardverwalter „esp32“ installieren.
-- **Bibliothek „Adafruit NeoPixel“**. *Fehlt auf diesem Mac noch.* Installation über den Bibliotheksverwalter.
+- **Bibliothek „Adafruit NeoPixel“** (installiert)
 
 ### Zugangsdaten
 
@@ -87,39 +100,56 @@ arduino-cli upload  --fqbn $FQBN -p /dev/cu.usbmodem* lichtwecker
 arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
 ```
 
-> **Tipp:** Weil der Controller die meiste Zeit im Deep Sleep ist, klappt ein Upload nur in den ersten 3 s nach dem Aufwachen. Alternativ BOOT gedrückt halten, RESET drücken und so den Download-Modus erzwingen.
+> **Tipp:** Der Controller ist die meiste Zeit im Deep Sleep, dann ist kein USB-Upload möglich. Zum Flashen **RESET drücken**: Danach wartet der Sketch 3 s. Klappt das nicht, BOOT gedrückt halten, RESET drücken und so den Download-Modus erzwingen.
 
 ### Konfiguration
 
-Alle Einstellungen stehen oben in `lichtwecker.ino`: `ALARM_HOUR`/`ALARM_MINUTE`, `MAX_BRIGHTNESS`, `NUM_LEDS`, Pins, Zeitzone, NTP-Server und `TEST_MODE`.
+Alle Einstellungen stehen oben in `lichtwecker.ino`:
+
+| Konstante | Standard | Bedeutung |
+|---|---|---|
+| `ALARM_HOUR` / `ALARM_MINUTE` | 5 / 30 | Weckzeit, zu der der Sonnenaufgang fertig ist |
+| `SUNRISE_MINUTES` | 30 | Dauer des Sonnenaufgangs vor der Weckzeit |
+| `DAYLIGHT_MINUTES` | 30 | Dauer des pulsierenden Lichts nach der Weckzeit |
+| `MAX_BRIGHTNESS` | 76 | Obergrenze pro Farbkanal (0–255) |
+| `WAKE_MARGIN_SEC` | 120 | so viel früher aufwachen, für WLAN/NTP |
+| `LATE_GRACE_SEC` | 600 | bis zu dieser Verspätung wird noch geweckt |
+| `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS` | | Hardware |
+| `TIME_ZONE`, `NTP_SERVER` | Berlin, `de.pool.ntp.org` | Zeit |
+| `TEST_MODE` | `false` | Zeitraffer zum Testen |
+
 Jede Änderung erfordert bisher ein erneutes Flashen.
 
-## Bekannte Probleme
+## Änderungen in v1.1
 
-Aus dem Code-Review. Nicht auf Hardware getestet, nach Schwere sortiert:
+Behoben aus dem Code-Review von v1:
 
-1. **Die Weck-Taste weckt vermutlich nicht aus dem Deep Sleep.** Auf dem ESP32-C3 können nur GPIO 0–5 aus dem Deep Sleep wecken. `esp_deep_sleep_enable_gpio_wakeup(1ULL << 9, …)` schlägt deshalb fehl, und der Rückgabewert wird nicht geprüft. Lösung: Taster an GPIO 0–5 legen und den Rückgabewert prüfen.
-2. **Der Sonnenaufgang beginnt erst *zur* Weckzeit.** Volle Helligkeit ist erst 30 min danach erreicht. Bei einem Lichtwecker sollte der Sonnenaufgang *zur* Weckzeit fertig sein, also 20–30 min vorher starten.
-3. **Die LEDs ziehen im Deep Sleep weiter Strom.** Auch „ausgeschaltete“ WS2812 verbrauchen je nach Typ ungefähr 0,5–1 mA pro LED. Bei 32 LEDs sind das ~15–30 mA dauerhaft, damit ist ein kleiner Akku in wenigen Tagen leer. Lösung: LED-Versorgung per MOSFET bzw. Load-Switch abschalten.
-4. **Der RTC-Fallback liefert eine falsche Uhrzeit.** Wenn WLAN fehlschlägt:
-   - Die Zeitzone wird nie gesetzt, weil `configTzTime` nur nach erfolgreichem WLAN läuft. `localtime_r` rechnet dann in UTC, und der Wecker geht 1–2 h falsch.
-   - `rtcLastEpoch += rtcLastSleepDurationSec` ignoriert die Wachzeit (bis zu 60 min Weckphase) und vorzeitiges Aufwachen per Taste.
+| Problem in v1 | Lösung in v1.1 |
+|---|---|
+| Der Sonnenaufgang begann erst **zur** Weckzeit, volle Helligkeit kam 30 min zu spät | Der Sonnenaufgang startet `SUNRISE_MINUTES` vor der Weckzeit und ist zur Weckzeit fertig |
+| Ohne WLAN fehlte die Zeitzone, der Wecker ging 1–2 h falsch | `TZ` wird bei jedem Start gesetzt |
+| Der RTC-Fallback rechnete Zeit selbst hoch und ignorierte dabei Wachzeit und Tastenweckung | Die Systemzeit läuft im Deep Sleep ohnehin weiter; sie wird direkt verwendet |
+| Der „NTP-Sync“ nach dem Deep Sleep korrigierte nie etwas: `getLocalTime()` meldete sofort Erfolg, weil die Zeit schon gültig war | Es wird auf die echte NTP-Antwort gewartet (Sync-Callback) |
+| Weckzeiten um Mitternacht (00:00–00:04) funktionierten nicht | Die Berechnung erfolgt über echte Zeitpunkte statt „heute“; getestet für Mitternacht und beide Zeitumstellungen |
+| Die Warteschleife vor dem Alarm konnte endlos hängen und ignorierte die Taste | Die Wartezeit ist auf 2 min begrenzt, die Taste überspringt den Wecker |
+| Weckte der Chip verspätet auf, begann der Sonnenaufgang von vorn oder fiel aus | Bis 10 min Verspätung steigt der Wecker an der passenden Stelle ein |
+| Lineare Helligkeitsrampe mit `setBrightness()` (grob, verliert Farbe) | Gammakorrigierte Rampe, Farben werden direkt skaliert |
+| Der Fehler bei der Tastenweckung an GPIO 9 fiel nicht auf | Der Rückgabewert wird geprüft und eine Warnung ausgegeben |
+| Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
+| 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
 
-   Dabei läuft die Systemzeit des ESP32 im Deep Sleep ohnehin weiter. Einfacher und korrekt ist `time(nullptr)` zusammen mit `setenv("TZ", …); tzset();` bei jedem Start.
-5. **Die Warteschleife vor dem Alarm kann hängen.** `while (… ) { delay(5000); getLocalTime(&timeinfo); }` hat kein Timeout. Die Taste wird dort nicht abgefragt, und wenn `getLocalTime` fehlschlägt, bleibt `timeinfo` unverändert.
-6. **Weckzeiten kurz nach Mitternacht funktionieren nicht.** Bei 00:00–00:04 liegt der Pre-Alarm am Vortag, und die Fensterberechnung bezieht sich nur auf „heute“.
-7. **Die Helligkeit steigt in sichtbaren Stufen.** Die Rampe ist linear, es gibt keine Gamma-Korrektur, und der Start bei Helligkeit 3 ist grob abgestuft. Außerdem kann `setBrightness()` laut Adafruit bei niedrigen Werten Farbinformationen verlieren. Besser ist es, die Farben direkt zu skalieren (`strip.gamma32()`).
-8. Kleinere Punkte:
-   - Die Konfiguration ist fest einkompiliert.
-   - `TEST_MODE` erfordert Neu-Flashen.
-   - Kein Snooze.
-   - Bei jedem Aufwachen gibt es 3 s `delay` plus WLAN-Verbindung (bis zu 25 s), was Energie kostet.
-   - GPIO 2 ist auf dem C3 ein Strapping-Pin (meist unkritisch).
+## Offene Punkte
+
+- **Nicht auf Hardware getestet.** v1.1 kompiliert, und die Zeitplan-Logik ist auf dem Mac getestet. Tastenweckung, `LED_POWER_PIN` und das Verhalten im Deep Sleep müssen auf dem Gerät geprüft werden, am besten erst mit `TEST_MODE = true`.
+- **Taste:** Die Hardware-Einschränkung an GPIO 9 bleibt (siehe [Hardware](#hardware)). Für eine Weckung per Taste an GPIO 0–5 aktiviert die ESP-IDF den internen Pull-up im Schlaf automatisch. Espressif empfiehlt beim Wecken auf LOW trotzdem einen externen Pull-up.
+- **Stufen am Anfang:** Bei sehr niedriger Helligkeit sind die 8-Bit-Stufen der WS2812 sichtbar, das ist hardwarebedingt. Abhilfe: zeitliches Dithering oder LEDs mit höherer Auflösung.
+- **Weiß pulsierend** in Phase 4 hat vollen Blauanteil, direkt vor den Augen.
+- GPIO 2 ist auf dem C3 ein Strapping-Pin (meist unkritisch).
 
 ## Roadmap / Ideen
 
-**Kurzfristig (Bugs & Basis)**
-- Punkte 1–6 aus [Bekannte Probleme](#bekannte-probleme) beheben, vor allem die Tasten-Pin und den Sonnenaufgangs-Start
+**Kurzfristig**
+- v1.1 auf der Hardware testen und dann als `v1.1` taggen
 - Auf PlatformIO umsteigen (`platformio.ini` mit festen Versionen von Core und Library), damit Builds reproduzierbar sind
 - Batteriespannung über ADC messen und bei niedrigem Stand warnen (z. B. kurzes rotes Blinken)
 
@@ -128,13 +158,14 @@ Aus dem Code-Review. Nicht auf Hardware getestet, nach Schwere sortiert:
 - Später eine kleine Web-App/PWA mit Web Bluetooth, Wochentagsprofile
 
 **Licht**
-- Physikalisch plausibler Farbverlauf (Farbtemperatur ~1800 K → 4000 K), gammakorrigiert, über 20–30 min
+- Physikalisch plausibler Farbverlauf (Farbtemperatur ~1800 K → 4000 K)
 - Blauanteil begrenzen, weil die LEDs direkt vor den Augen sitzen
-- Sanftes Ausschalten statt Pulsieren und/oder Snooze per Taste
+- Snooze per Taste statt sofort beenden; sanftes Ausblenden statt Pulsieren
 
 **Hardware**
+- Taster an GPIO 0–5, MOSFET für die LED-Versorgung
 - Weniger und diffusere LEDs (Hitze, Blendung, Stromverbrauch)
-- LiPo mit Schutzschaltung, USB-C-Laden, LED-Versorgung abschaltbar
+- LiPo mit Schutzschaltung, USB-C-Laden
 - Vibrationsmotor als Backup-Alarm
 - Später: Beschleunigungssensor für „Smart Wake“ im leichten Schlaf
 
@@ -145,8 +176,8 @@ Aus dem Code-Review. Nicht auf Hardware getestet, nach Schwere sortiert:
 ├── README.md
 ├── concept.md              Produktidee, Bewertung, Ideen
 ├── .gitignore
-├── lichtwecker/
-│   ├── lichtwecker.ino     aktueller Sketch
-│   ├── secrets.example.h   Vorlage für Zugangsdaten
-│   └── secrets.h           lokal, nicht versioniert
+└── lichtwecker/
+    ├── lichtwecker.ino     aktueller Sketch
+    ├── secrets.example.h   Vorlage für Zugangsdaten
+    └── secrets.h           lokal, nicht versioniert
 ```
