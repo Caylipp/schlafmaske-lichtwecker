@@ -191,12 +191,10 @@ void goToDeepSleep(uint64_t sleepSeconds) {
   // Aufwachen per Timer
   esp_sleep_enable_timer_wakeup(sleepSeconds * 1000000ULL);
 
-  // Aufwachen per Taste (LOW). Klappt auf dem ESP32-C3 nur an GPIO 0-5.
-  esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
-  if (err != ESP_OK) {
-    Serial.printf("[WARNUNG] GPIO %d kann nicht aus dem Deep Sleep wecken (%s)\n",
-                  BUTTON_PIN, esp_err_to_name(err));
-    Serial.flush();
+  // Aufwachen per Taste (LOW). Klappt auf dem ESP32-C3 nur an GPIO 0-5, an GPIO 9
+  // meldet die IDF sonst "gpio 9 is an invalid deep sleep wakeup IO".
+  if ((1ULL << BUTTON_PIN) & SOC_GPIO_DEEP_SLEEP_WAKE_VALID_GPIO_MASK) {
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
   }
 
   esp_deep_sleep_start();
