@@ -16,6 +16,20 @@ Der aktuelle Sketch liegt in [`lichtwecker/`](lichtwecker/).
 | `v1.0` (Git-Tag) | Originalstand vom 20.08.2026, nur die WLAN-Daten sind in `secrets.h` ausgelagert |
 | `main` | v1.1: Bugfixes aus dem Code-Review, siehe [Änderungen in v1.1](#änderungen-in-v11) |
 
+### Entwicklungsgeschichte
+
+v1 entstand mit Gemini. Laut dem Gemini-Chat lief das so:
+1. **Basisversion:** WLAN/NTP-Sync, RTC-Fallback, 4-Phasen-Sonnenaufgang, Deep Sleep bis 5 min vor der Weckzeit.
+2. **Korrekturen:**
+   - 3 s Upload-Delay, weil der sofortige Deep Sleep die USB-Uploads blockierte.
+   - Weckzeit-Logik auf Unix-Timestamps (`mktime`) umgestellt.
+   - 50 ms Tastenentprellung.
+3. **Versuch, per BOOT-Taste aus dem Deep Sleep zu wecken.** Auf der Hardware kam der Fehler `sleep: gpio 9 is an invalid deep sleep wakeup IO`, der Versuch wurde verworfen.
+
+**Auf Hardware getestet (v1):** NTP-Sync, RTC-Fallback, Timer-Weckung, Sonnenaufgang (echt und im Zeitraffer), Abbruch per Taste, Upload dank Delay. Messwerte zu Strom, Akku oder Temperatur gibt es nicht.
+
+Der letzte Stand im Gemini-Chat ist nicht in Git. Er unterscheidet sich von `v1.0` nur in drei Punkten: Die Tastenweckung fehlt, es war eine Testkonfiguration aktiv (Weckzeit 19:46, `TEST_MODE = true`), und ein anderes WLAN war eingetragen. Diese Punkte sind in v1.1 abgedeckt.
+
 Früher lagen zwei Ordner nebeneinander, `version1` (20.08.) und `version1_1` (25.08.). Beide waren byte-identisch, weil `version1_1` nur als Kopie für eine geplante v1.1 angelegt wurde. Sie wurden zu `lichtwecker/` zusammengeführt. Versionen werden jetzt über Git-Tags markiert, nicht über kopierte Ordner.
 
 ## Funktionsweise
@@ -49,11 +63,13 @@ Im `TEST_MODE` gilt 1 s = 1 min, und das Gerät schläft jeweils nur 10 s.
 
 | Bauteil | Details |
 |---|---|
-| Mikrocontroller | ESP32-C3 (z. B. ESP32-C3 SuperMini / DevKitM-1) |
-| LEDs | 32× WS2812/NeoPixel (GRB, 800 kHz), Daten an **GPIO 2** |
-| Taster | BOOT-Taster an **GPIO 9** (aktiv LOW, interner Pull-up) |
+| Mikrocontroller | **Seeed Studio XIAO ESP32C3** |
+| LEDs | 32× NeoPixel (GRB, 800 kHz, genauer Typ undokumentiert), Daten an **GPIO 2** (XIAO-Pin D0) |
+| Taster | BOOT-Taster des XIAO an **GPIO 9** (aktiv LOW, interner Pull-up) |
 | LED-Abschaltung | optional: MOSFET/Load-Switch an `LED_POWER_PIN` (Standard: keiner) |
-| Stromversorgung | nicht dokumentiert, vermutlich LiPo oder USB |
+| Stromversorgung | bisher USB-C; Akku noch nicht festgelegt |
+
+GPIO 2 ist ein Strapping-Pin. Zwischendurch wurde deshalb GPIO 4 getestet. Mit dem vorhandenen Aufbau gab es an GPIO 2 aber keine Boot-Probleme, darum wurde zurückgewechselt.
 
 Die maximale Helligkeit ist per Software auf 76/255 (≈ 30 %) begrenzt. Bei voll weißem Licht ziehen 32 LEDs trotzdem noch ungefähr **0,5–0,6 A**.
 
@@ -83,7 +99,7 @@ cp lichtwecker/secrets.example.h lichtwecker/secrets.h
 ### Kompilieren & Flashen
 
 In der Arduino IDE `lichtwecker/lichtwecker.ino` öffnen und dann einstellen:
-- Board: **ESP32C3 Dev Module**
+- Board: **XIAO_ESP32C3** (Port z. B. `/dev/cu.usbmodem14101`)
 - **USB CDC On Boot: Enabled**. Ohne diese Einstellung gibt es keine serielle Ausgabe über den USB-Port des C3.
 
 Oder per CLI:
@@ -94,7 +110,7 @@ arduino-cli config add board_manager.additional_urls https://espressif.github.io
 arduino-cli core update-index && arduino-cli core install esp32:esp32
 arduino-cli lib install "Adafruit NeoPixel"
 
-FQBN="esp32:esp32:esp32c3:CDCOnBoot=cdc"
+FQBN="esp32:esp32:XIAO_ESP32C3"
 arduino-cli compile --fqbn $FQBN lichtwecker
 arduino-cli upload  --fqbn $FQBN -p /dev/cu.usbmodem* lichtwecker
 arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
@@ -134,7 +150,7 @@ Behoben aus dem Code-Review von v1:
 | Die Warteschleife vor dem Alarm konnte endlos hängen und ignorierte die Taste | Die Wartezeit ist auf 2 min begrenzt, die Taste überspringt den Wecker |
 | Weckte der Chip verspätet auf, begann der Sonnenaufgang von vorn oder fiel aus | Bis 10 min Verspätung steigt der Wecker an der passenden Stelle ein |
 | Lineare Helligkeitsrampe mit `setBrightness()` (grob, verliert Farbe) | Gammakorrigierte Rampe, Farben werden direkt skaliert |
-| Der Fehler bei der Tastenweckung an GPIO 9 fiel nicht auf | Der Rückgabewert wird geprüft und eine Warnung ausgegeben |
+| Tastenweckung an GPIO 9 erzeugte einen Fehler (auf Hardware bestätigt) | Tastenweckung wird nur an gültigen Pins (GPIO 0–5) aktiviert |
 | Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
 | 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
 
