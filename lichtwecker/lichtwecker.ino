@@ -3,13 +3,15 @@
 #include "time.h"
 #include "esp_sleep.h"
 #include "esp_sntp.h"
+#include "esp_system.h"
 #include "driver/gpio.h"
 #include "secrets.h"            // WIFI_SSID / WIFI_PASSWORD, siehe secrets.example.h
 
 // ==========================================
 // KONFIGURATION
 // ==========================================
-#define LED_PIN           2        // Datenleitung NeoPixel
+// Board: Seeed Studio XIAO ESP32C3
+#define LED_PIN           2        // Datenleitung NeoPixel (XIAO D0)
 #define BUTTON_PIN        9        // BOOT-Button. Achtung: weckt NICHT aus dem Deep Sleep,
                                    // dafür muss die Taste an GPIO 0-5 (ESP32-C3)
 #define LED_POWER_PIN     -1       // Optional: MOSFET/Load-Switch für die LED-Versorgung, -1 = keiner
@@ -29,17 +31,25 @@ const int DAYLIGHT_MINUTES = 30;   // Dauer des pulsierenden Lichts nach der Wec
 const int WAKE_MARGIN_SEC = 120;   // So viel früher aufwachen (WLAN/NTP-Sync)
 const int LATE_GRACE_SEC  = 600;   // Wecker startet noch, wenn bis zu 10 min zu spät aufgewacht
 
-const bool TEST_MODE      = false;  // true = 10s Sleep + Zeitraffer-Wecker (1s = 1min)
+// Testmenü: nach RESET innerhalb von MENU_WINDOW_MS die BOOT-Taste drücken
+const unsigned long MENU_WINDOW_MS  = 3000;   // gleichzeitig Upload-Fenster für USB
+const unsigned long MENU_TIMEOUT_MS = 15000;  // ohne Tastendruck zurück in den Normalbetrieb
+const unsigned long LONG_PRESS_MS   = 1000;   // lang drücken = Modus starten
+const int TRIAL_DELAY_SEC = WAKE_MARGIN_SEC + 30;  // Probelauf: Sonnenaufgang startet so viel später
 
 // ==========================================
 // RTC-SPEICHER (Überlebt den Deep Sleep)
 // ==========================================
 RTC_DATA_ATTR time_t rtcHandledSunrise = 0;   // Start des zuletzt gespielten/übersprungenen Sonnenaufgangs
+RTC_DATA_ATTR time_t rtcTrialStart = 0;       // Probelauf aus dem Testmenü, 0 = keiner
 
 // ==========================================
 // INITIALISIERUNG
 // ==========================================
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+enum TimeSource { TIME_NONE, TIME_RTC, TIME_NTP };
+enum ButtonEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
 
 volatile bool ntpSynced = false;
 
@@ -47,23 +57,48 @@ void onNtpSync(struct timeval *tv) {
   ntpSynced = true;
 }
 
-// Setzt alle LEDs auf eine Farbe. level = 0..1 (wahrgenommene Helligkeit),
-// wird gammakorrigiert und auf MAX_BRIGHTNESS begrenzt. Kein setBrightness(),
+// ==========================================
+// LEDS
+// ==========================================
+
+// Farbe für eine Helligkeit level = 0..1 (wahrgenommene Helligkeit),
+// gammakorrigiert und auf MAX_BRIGHTNESS begrenzt. Kein setBrightness(),
 // da das bei kleinen Werten Farbinformation verliert.
-void setStripColor(uint8_t r, uint8_t g, uint8_t b, float level) {
+uint32_t scaledColor(uint8_t r, uint8_t g, uint8_t b, float level) {
   level = constrain(level, 0.0f, 1.0f);
   float scale = powf(level, 2.2f) * MAX_BRIGHTNESS / 255.0f;
   uint8_t rr = (uint8_t)lroundf(r * scale);
   uint8_t gg = (uint8_t)lroundf(g * scale);
   uint8_t bb = (uint8_t)lroundf(b * scale);
   if (level > 0.0f && rr == 0 && gg == 0 && bb == 0) rr = 1;  // ganz am Anfang schon ein Glimmen
-  strip.fill(strip.Color(rr, gg, bb));
+  return strip.Color(rr, gg, bb);
+}
+
+void setStripColor(uint8_t r, uint8_t g, uint8_t b, float level) {
+  strip.fill(scaledColor(r, g, b, level));
+  strip.show();
+}
+
+// Die ersten n LEDs leuchten, der Rest ist aus (für Anzeigen wie Modus oder Stunden)
+void showCount(int n, uint8_t r, uint8_t g, uint8_t b, float level) {
+  strip.clear();
+  n = constrain(n, 0, NUM_LEDS);
+  if (n > 0) strip.fill(scaledColor(r, g, b, level), 0, n);  // count 0 hieße bei fill(): bis zum Ende
   strip.show();
 }
 
 void clearLEDs() {
   strip.clear();
   strip.show();
+}
+
+void blink(uint8_t r, uint8_t g, uint8_t b, int times) {
+  for (int i = 0; i < times; i++) {
+    setStripColor(r, g, b, 0.6f);
+    delay(250);
+    clearLEDs();
+    delay(250);
+  }
 }
 
 void ledPower(bool on) {
@@ -80,6 +115,10 @@ void ledPower(bool on) {
   }
 }
 
+// ==========================================
+// TASTE
+// ==========================================
+
 bool buttonPressed() {
   if (digitalRead(BUTTON_PIN) == LOW) {
     delay(50); // Entprellung
@@ -87,6 +126,53 @@ bool buttonPressed() {
   }
   return false;
 }
+
+void waitForRelease() {
+  while (digitalRead(BUTTON_PIN) == LOW) {
+    delay(10);
+  }
+  delay(50);
+}
+
+// Wartet bis zu timeoutMs auf einen kurzen oder langen Tastendruck.
+// Beim langen Druck leuchtet der Streifen kurz auf, damit man weiß, wann man loslassen kann.
+ButtonEvent waitForButton(unsigned long timeoutMs) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    if (buttonPressed()) {
+      unsigned long pressStart = millis();
+      while (digitalRead(BUTTON_PIN) == LOW) {
+        if (millis() - pressStart >= LONG_PRESS_MS) {
+          setStripColor(255, 255, 255, 0.4f);
+          waitForRelease();
+          clearLEDs();
+          return BTN_LONG;
+        }
+        delay(10);
+      }
+      return BTN_SHORT;
+    }
+    delay(10);
+  }
+  return BTN_NONE;
+}
+
+// Wartet ms Millisekunden. true = per Taste abgebrochen.
+bool waitOrAbort(unsigned long ms) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < ms) {
+    if (buttonPressed()) {
+      waitForRelease();
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
+
+// ==========================================
+// ZEIT
+// ==========================================
 
 // Systemzeit gilt als gültig, wenn sie nach 2024 liegt (nach Stromausfall startet sie bei 1970)
 bool systemTimeValid() {
@@ -128,23 +214,22 @@ bool syncTimeWithWiFi() {
   return ok;
 }
 
-// Liefert true, wenn eine brauchbare Uhrzeit vorliegt (per NTP oder RTC-Fallback)
-bool getValidTime() {
+TimeSource getValidTime() {
   // Zeitzone immer setzen, auch wenn WLAN ausfällt, sonst rechnet localtime in UTC
   setenv("TZ", TIME_ZONE, 1);
   tzset();
 
   if (syncTimeWithWiFi()) {
-    return true;
+    return TIME_NTP;
   }
 
   // Die RTC des ESP32 läuft im Deep Sleep weiter, die Systemzeit bleibt also erhalten
   if (systemTimeValid()) {
     Serial.println("[RTC-FALLBACK] Nutze interne Zeit.");
-    return true;
+    return TIME_RTC;
   }
 
-  return false;
+  return TIME_NONE;
 }
 
 void printTime(const char *label, time_t t) {
@@ -171,6 +256,19 @@ time_t sunriseStartAtOrAfter(time_t t) {
   }
   return start;
 }
+
+// Wie sunriseStartAtOrAfter, berücksichtigt aber einen anstehenden Probelauf
+time_t nextSunriseStart(time_t t) {
+  time_t start = sunriseStartAtOrAfter(t);
+  if (rtcTrialStart >= t && rtcTrialStart < start) {
+    start = rtcTrialStart;
+  }
+  return start;
+}
+
+// ==========================================
+// DEEP SLEEP
+// ==========================================
 
 void goToDeepSleep(uint64_t sleepSeconds) {
   Serial.println("==========================================");
@@ -201,19 +299,20 @@ void goToDeepSleep(uint64_t sleepSeconds) {
 }
 
 void goToDeepSleepUntilNextSunrise() {
-  if (TEST_MODE) {
-    goToDeepSleep(10);
-  }
   time_t now = time(nullptr);
-  time_t wakeAt = sunriseStartAtOrAfter(now + WAKE_MARGIN_SEC + 1) - WAKE_MARGIN_SEC;
+  time_t wakeAt = nextSunriseStart(now + WAKE_MARGIN_SEC + 1) - WAKE_MARGIN_SEC;
   printTime("[SLEEP] Naechster Sonnenaufgang ab", wakeAt + WAKE_MARGIN_SEC);
   goToDeepSleep(wakeAt > now ? wakeAt - now : 1);
 }
 
+// ==========================================
+// SONNENAUFGANG
+// ==========================================
+
 // Spielt den Sonnenaufgang ab. startOffsetMs > 0, wenn das Gerät zu spät aufgewacht ist:
-// Dann wird an der passenden Stelle eingestiegen.
-void runSunriseAlarm(unsigned long startOffsetMs) {
-  Serial.println("\n[ALARM] >>> SONNENAUFGANG GESTARTET <<<");
+// Dann wird an der passenden Stelle eingestiegen. fast = Zeitraffer (1 s = 1 min).
+void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
+  Serial.printf("\n[ALARM] >>> SONNENAUFGANG GESTARTET%s <<<\n", fast ? " (Zeitraffer)" : "");
   unsigned long startMillis = millis() - startOffsetMs;
   int currentPhase = -1;
   const float S = SUNRISE_MINUTES;
@@ -223,11 +322,12 @@ void runSunriseAlarm(unsigned long startOffsetMs) {
   while (true) {
     if (buttonPressed()) {
       Serial.println("[BUTTON] Wecker manuell beendet!");
+      waitForRelease();
       break;
     }
 
     unsigned long elapsedMillis = millis() - startMillis;
-    float elapsedMinutes = TEST_MODE ? (elapsedMillis / 1000.0f) : (elapsedMillis / 60000.0f);
+    float elapsedMinutes = fast ? (elapsedMillis / 1000.0f) : (elapsedMillis / 60000.0f);
 
     uint8_t r = 0, g = 0, b = 0;
     float level = 0.0f;
@@ -278,20 +378,107 @@ void runSunriseAlarm(unsigned long startOffsetMs) {
 }
 
 // ==========================================
+// STATUS & TESTMENÜ
+// ==========================================
+
+// Anzeige nach jedem Reset: Farbe = Zeitquelle, Anzahl LEDs = Stunden bis zur Weckzeit
+void showStatus(TimeSource source) {
+  if (esp_reset_reason() == ESP_RST_BROWNOUT) {
+    Serial.println("[STATUS] Letzter Neustart durch Spannungseinbruch (Brownout)!");
+    blink(255, 0, 255, 3);   // lila: Akku leer oder LEDs ziehen zu viel Strom
+  }
+
+  if (source == TIME_NONE) {
+    Serial.println("[STATUS] Keine gueltige Uhrzeit.");
+    blink(255, 0, 0, 3);     // rot
+    return;
+  }
+
+  time_t now = time(nullptr);
+  time_t alarm = sunriseStartAtOrAfter(now) + SUNRISE_MINUTES * 60;
+  int hours = max(1, (int)((alarm - now + 3599) / 3600));
+  printTime("[STATUS] Naechste Weckzeit:", alarm);
+  Serial.printf("[STATUS] Zeitquelle: %s, noch %d Std.\n", source == TIME_NTP ? "NTP" : "RTC", hours);
+
+  if (source == TIME_NTP) {
+    showCount(hours, 0, 255, 0, 0.6f);     // grün: WLAN + NTP ok
+  } else {
+    showCount(hours, 255, 160, 0, 0.6f);   // gelb: nur interne Uhr
+  }
+  delay(5000);
+  clearLEDs();
+}
+
+// Modus 1: alle Farben, jede LED einzeln (tote LEDs / Unterbrechungen), dann Volllast.
+// Startet das Board bei Volllast neu, reicht die Stromversorgung nicht.
+void runLedTest() {
+  Serial.println("[TEST] LED-Test: Farben");
+  const uint8_t colors[][3] = { {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255} };
+  for (const auto &c : colors) {
+    setStripColor(c[0], c[1], c[2], 1.0f);
+    if (waitOrAbort(1000)) {
+      clearLEDs();
+      return;
+    }
+  }
+
+  Serial.println("[TEST] LED-Test: Lauflicht");
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.clear();
+    strip.setPixelColor(i, scaledColor(255, 255, 255, 1.0f));
+    strip.show();
+    if (waitOrAbort(100)) {
+      clearLEDs();
+      return;
+    }
+  }
+
+  Serial.println("[TEST] LED-Test: Volllast 10 s");
+  setStripColor(255, 255, 255, 1.0f);
+  waitOrAbort(10000);
+  clearLEDs();
+  Serial.println("[TEST] LED-Test fertig.");
+}
+
+// Testmenü: Modus = Anzahl hellblauer LEDs. Kurz drücken = nächster Modus, lang = starten.
+// Rückgabe true = Probelauf gewählt.
+bool runTestMenu() {
+  const int MODE_COUNT = 3;
+  int mode = 1;
+  Serial.println("[MENU] Testmenue: 1 = LED-Test, 2 = Zeitraffer, 3 = Probelauf");
+  blink(0, 180, 255, 2);   // Menü erkannt
+
+  while (true) {
+    showCount(mode, 0, 180, 255, 0.5f);
+    Serial.printf("[MENU] Modus %d\n", mode);
+
+    ButtonEvent ev = waitForButton(MENU_TIMEOUT_MS);
+    if (ev == BTN_NONE) {
+      clearLEDs();
+      Serial.println("[MENU] Timeout, zurueck in den Normalbetrieb.");
+      return false;
+    }
+    if (ev == BTN_SHORT) {
+      mode = mode % MODE_COUNT + 1;
+      continue;
+    }
+
+    if (mode == 1) runLedTest();
+    else if (mode == 2) runSunriseAlarm(0, true);
+    else return true;
+  }
+}
+
+// ==========================================
 // MAIN SETUP
 // ==========================================
 
 void setup() {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-
-  // Zeitfenster für Uploads über USB CDC, nur nach Reset/Einschalten, nicht bei jedem Aufwachen
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
-    delay(3000);
-  }
+  bool afterReset = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED);
 
   setCpuFrequencyMhz(80);
   Serial.begin(115200);
-  delay(200);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
@@ -299,27 +486,55 @@ void setup() {
   strip.begin();
   clearLEDs();
 
+  // Nach Reset/Einschalten: 3 s Fenster für USB-Uploads und fürs Testmenü.
+  // Die erste LED leuchtet blau, solange man BOOT drücken kann.
+  // (BOOT nicht schon beim Reset halten, sonst startet der Chip im Download-Modus.)
+  bool menuRequested = false;
+  if (afterReset) {
+    showCount(1, 0, 0, 255, 0.5f);
+    unsigned long t0 = millis();
+    while (millis() - t0 < MENU_WINDOW_MS) {
+      if (buttonPressed()) {
+        waitForRelease();
+        menuRequested = true;
+        break;
+      }
+      delay(10);
+    }
+    clearLEDs();
+  }
+
   Serial.println("\n--- ESP32-C3 WAKEUPSERVICE ---");
 
   if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO) {
     Serial.println("[WAKEUP] Durch Manuelle Taste aufgeweckt!");
   }
 
-  if (!getValidTime()) {
+  bool trialRequested = menuRequested && runTestMenu();
+
+  TimeSource source = getValidTime();
+  if (afterReset) {
+    showStatus(source);
+  }
+  if (source == TIME_NONE) {
     Serial.println("[SLEEP] Keine gültige Uhrzeit: Versuche in 60s erneut...");
     goToDeepSleep(60);
-  }
-
-  if (TEST_MODE) {
-    runSunriseAlarm(0);
-    goToDeepSleepUntilNextSunrise();
   }
 
   time_t now = time(nullptr);
   printTime("[ZEIT] Jetzt:", now);
 
-  // Sonnenaufgang, der gerade ansteht oder vor höchstens LATE_GRACE_SEC hätte beginnen sollen
-  time_t start = sunriseStartAtOrAfter(now - LATE_GRACE_SEC);
+  if (trialRequested) {
+    rtcTrialStart = now + TRIAL_DELAY_SEC;
+    printTime("[TEST] Probelauf: Sonnenaufgang (Zeitraffer) ab", rtcTrialStart);
+    blink(0, 180, 255, 2);
+  }
+
+  // Anstehender Sonnenaufgang: Probelauf oder regulär (auch wenn er vor höchstens
+  // LATE_GRACE_SEC hätte beginnen sollen)
+  bool trial = rtcTrialStart != 0 && now <= rtcTrialStart + LATE_GRACE_SEC;
+  if (!trial) rtcTrialStart = 0;
+  time_t start = trial ? rtcTrialStart : sunriseStartAtOrAfter(now - LATE_GRACE_SEC);
 
   if (start == rtcHandledSunrise) {
     Serial.println("[ALARM] Heutiger Wecker wurde schon gespielt oder beendet.");
@@ -327,6 +542,7 @@ void setup() {
   else if (start - now <= WAKE_MARGIN_SEC) {
     printTime("[ALARM] Sonnenaufgang ab", start);
     rtcHandledSunrise = start;
+    if (trial) rtcTrialStart = 0;
 
     // Bis zum Start warten (höchstens WAKE_MARGIN_SEC). Taste = heutigen Wecker überspringen.
     bool skipped = false;
@@ -341,9 +557,9 @@ void setup() {
 
     if (!skipped) {
       now = time(nullptr);
-      unsigned long lateMs = now > start ? (unsigned long)(now - start) * 1000UL : 0;
+      unsigned long lateMs = (!trial && now > start) ? (unsigned long)(now - start) * 1000UL : 0;
       if (lateMs > 0) Serial.printf("[ALARM] %lu s verspätet, steige passend ein.\n", lateMs / 1000);
-      runSunriseAlarm(lateMs);
+      runSunriseAlarm(lateMs, trial);
     }
   }
 

@@ -36,8 +36,9 @@ Früher lagen zwei Ordner nebeneinander, `version1` (20.08.) und `version1_1` (2
 
 ```
 Einschalten / Aufwachen
-  └─ nur nach Reset: 3 s warten (Upload-Fenster für USB)
+  └─ nur nach Reset: 3 s Fenster (erste LED blau) für USB-Upload und Testmenü
   └─ Uhrzeit holen: WLAN + NTP ─(Fehler)─> interne RTC-Zeit ─(ungültig)─> 60 s schlafen, neu versuchen
+  └─ nur nach Reset: Statusanzeige (siehe Testen)
   └─ steht der Sonnenaufgang in ≤ 2 min an (oder hat vor ≤ 10 min begonnen)?
         ja   ─> bis zum Start warten ─> Sonnenaufgang (bei Verspätung passend einsteigen)
         nein ─> nichts tun
@@ -57,7 +58,7 @@ Einschalten / Aufwachen
 In den Phasen 1 bis 3 steigt die Helligkeit gleichmäßig und gammakorrigiert von 0 auf `MAX_BRIGHTNESS`.
 **Taste während des Weckers:** Der Wecker wird beendet. **Taste in den 2 min davor:** Der Wecker wird für heute übersprungen.
 
-Im `TEST_MODE` gilt 1 s = 1 min, und das Gerät schläft jeweils nur 10 s.
+Zum Testen, ohne auf den Morgen zu warten, gibt es das [Testmenü](#testen).
 
 ## Hardware
 
@@ -116,7 +117,7 @@ arduino-cli upload  --fqbn $FQBN -p /dev/cu.usbmodem* lichtwecker
 arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
 ```
 
-> **Tipp:** Der Controller ist die meiste Zeit im Deep Sleep, dann ist kein USB-Upload möglich. Zum Flashen **RESET drücken**: Danach wartet der Sketch 3 s. Klappt das nicht, BOOT gedrückt halten, RESET drücken und so den Download-Modus erzwingen.
+> **Tipp:** Der Controller ist die meiste Zeit im Deep Sleep, dann ist kein USB-Upload möglich. Zum Flashen **RESET drücken**: Danach ist das Board 3 s wach (erste LED blau), plus die Zeit für den WLAN-Sync. Klappt das nicht, BOOT gedrückt halten, RESET drücken und so den Download-Modus erzwingen.
 
 ### Konfiguration
 
@@ -132,9 +133,41 @@ Alle Einstellungen stehen oben in `lichtwecker.ino`:
 | `LATE_GRACE_SEC` | 600 | bis zu dieser Verspätung wird noch geweckt |
 | `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS` | | Hardware |
 | `TIME_ZONE`, `NTP_SERVER` | Berlin, `de.pool.ntp.org` | Zeit |
-| `TEST_MODE` | `false` | Zeitraffer zum Testen |
 
 Jede Änderung erfordert bisher ein erneutes Flashen.
+
+## Testen
+
+Alles funktioniert **ohne Computer**. Rückmeldung gibt es nur über die LEDs, die serielle Ausgabe (115200 Baud) zeigt zusätzlich Details.
+Wichtig: **Erst RESET drücken, dann BOOT.** Wer BOOT schon beim Reset hält, startet den Upload-Modus.
+
+### Check vor dem Schlafen
+
+USB abziehen (Akkubetrieb!), **RESET** drücken, keine Taste mehr anfassen:
+
+| Anzeige | Bedeutung |
+|---|---|
+| erste LED blau (3 s) | Fenster fürs Testmenü, einfach abwarten |
+| *N* LEDs **grün** (5 s) | WLAN und Uhrzeit ok, Wecker klingelt in *N* Stunden → gute Nacht |
+| *N* LEDs **gelb** | kein WLAN, die interne Uhr läuft aber, Wecker in *N* Stunden (Uhr kann leicht abweichen) |
+| 3× **rot** blinken | keine gültige Uhrzeit, der **Wecker funktioniert nicht**. WLAN prüfen, neuer Versuch alle 60 s |
+| 3× **lila** blinken | der letzte Neustart kam durch einen Spannungseinbruch: Akku fast leer oder LEDs ziehen zu viel Strom |
+
+### Testmenü
+
+**RESET** drücken, dann **BOOT drücken, solange die erste LED blau ist**. Nach 2× hellblauem Blinken ist das Menü aktiv:
+- **Modus** = Anzahl hellblauer LEDs
+- **BOOT kurz** = nächster Modus, **BOOT lang (1 s)** = starten (Streifen blitzt weiß auf, dann loslassen)
+- **BOOT während eines Tests** = abbrechen, zurück ins Menü
+- 15 s ohne Tastendruck = Menü verlassen, danach normaler Betrieb mit Statusanzeige
+
+| Modus | Test | Was er prüft | Dauer |
+|---|---|---|---|
+| 1 | **LED-Test**: Rot, Grün, Blau, Weiß → Lauflicht über jede einzelne LED → 10 s Weiß mit maximaler Helligkeit | defekte LEDs, Unterbrechung im Streifen (Lauflicht bleibt stehen), Stromversorgung unter Last (startet das Board neu → danach blinkt es lila) | ~17 s |
+| 2 | **Sonnenaufgang im Zeitraffer** (1 s = 1 min) | Farben und Helligkeitsverlauf | 60 s |
+| 3 | **Probelauf**: Menü wird verlassen, das Board geht in den Deep Sleep, wacht per Timer auf, synchronisiert die Zeit und spielt ~2,5 min später den Sonnenaufgang im Zeitraffer | die komplette Kette wie nachts: Deep Sleep → Aufwachen → WLAN → Wecker | ~3,5 min |
+
+**Empfohlen vor der ersten Nacht:** Modus 1 und Modus 3 **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
 
 ## Änderungen in v1.1
 
@@ -153,10 +186,12 @@ Behoben aus dem Code-Review von v1:
 | Tastenweckung an GPIO 9 erzeugte einen Fehler (auf Hardware bestätigt) | Tastenweckung wird nur an gültigen Pins (GPIO 0–5) aktiviert |
 | Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
 | 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
+| Testen nur über `TEST_MODE` und Neu-Flashen, sonst Warten bis zum Morgen | Statusanzeige nach jedem Reset und Testmenü per BOOT-Taste (LED-Test, Zeitraffer, Probelauf) |
 
 ## Offene Punkte
 
-- **Nicht auf Hardware getestet.** v1.1 kompiliert, und die Zeitplan-Logik ist auf dem Mac getestet. Tastenweckung, `LED_POWER_PIN` und das Verhalten im Deep Sleep müssen auf dem Gerät geprüft werden, am besten erst mit `TEST_MODE = true`.
+- **Nicht auf Hardware getestet.** v1.1 kompiliert, und die Zeitplan-Logik ist auf dem Mac getestet. Auf dem Gerät mit dem [Testmenü](#testen) prüfen, vor allem den Probelauf im Akkubetrieb.
+- **Akkustand** lässt sich noch nicht messen. Der XIAO ESP32C3 hat dafür keinen eingebauten Spannungsteiler, nötig wären 2 Widerstände (z. B. 2× 220 kΩ) von BAT an einen freien Analog-Pin (z. B. A1/GPIO 3).
 - **Taste:** Die Hardware-Einschränkung an GPIO 9 bleibt (siehe [Hardware](#hardware)). Für eine Weckung per Taste an GPIO 0–5 aktiviert die ESP-IDF den internen Pull-up im Schlaf automatisch. Espressif empfiehlt beim Wecken auf LOW trotzdem einen externen Pull-up.
 - **Stufen am Anfang:** Bei sehr niedriger Helligkeit sind die 8-Bit-Stufen der WS2812 sichtbar, das ist hardwarebedingt. Abhilfe: zeitliches Dithering oder LEDs mit höherer Auflösung.
 - **Weiß pulsierend** in Phase 4 hat vollen Blauanteil, direkt vor den Augen.
@@ -165,9 +200,9 @@ Behoben aus dem Code-Review von v1:
 ## Roadmap / Ideen
 
 **Kurzfristig**
-- v1.1 auf der Hardware testen und dann als `v1.1` taggen
+- v1.1 mit dem Testmenü auf der Hardware testen und dann als `v1.1` taggen
 - Auf PlatformIO umsteigen (`platformio.ini` mit festen Versionen von Core und Library), damit Builds reproduzierbar sind
-- Batteriespannung über ADC messen und bei niedrigem Stand warnen (z. B. kurzes rotes Blinken)
+- Akkuspannung über Spannungsteiler + ADC messen, in der Statusanzeige zeigen und bei niedrigem Stand warnen
 
 **Konfiguration**
 - Weckzeit ohne Neu-Flashen setzen: WiFiManager-Captive-Portal oder BLE, Speicherung in `Preferences` (NVS)
