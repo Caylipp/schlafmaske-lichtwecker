@@ -17,6 +17,7 @@
 #define LED_POWER_PIN     -1       // Optional: MOSFET/Load-Switch für die LED-Versorgung, -1 = keiner
 #define LED_POWER_ON      HIGH     // Pegel, bei dem die LEDs Strom bekommen
 #define NUM_LEDS          16       // 2 Ringe à 8 LEDs (ein Ring pro Auge), hintereinander geschaltet
+#define LEDS_PER_RING     8
 
 const uint8_t MAX_BRIGHTNESS = 76;   // Obergrenze pro Farbkanal (0-255)
 
@@ -29,7 +30,9 @@ const int ALARM_MINUTE    = 30;    // Weckminute
 const int SUNRISE_MINUTES = 30;    // Dauer des Sonnenaufgangs vor der Weckzeit
 const int DAYLIGHT_MINUTES = 30;   // Dauer des pulsierenden Lichts nach der Weckzeit
 const int WAKE_MARGIN_SEC = 120;   // So viel früher aufwachen (WLAN/NTP-Sync)
-const int LATE_GRACE_SEC  = 600;   // Wecker startet noch, wenn bis zu 10 min zu spät aufgewacht
+const int LATE_GRACE_SEC  = SUNRISE_MINUTES * 60;  // Zu spät aufgewacht: bis dahin wird noch passend eingestiegen
+const int DRIFT_CHECK_MIN_SEC = 3600; // Längeren Schlaf teilen: nach 90 % aufwachen und Uhr nachstellen,
+                                      // weil der interne Takt im Deep Sleep um einige Prozent driftet
 
 // Testmenü: nach RESET innerhalb von MENU_WINDOW_MS die BOOT-Taste drücken
 const unsigned long MENU_WINDOW_MS  = 3000;   // gleichzeitig Upload-Fenster für USB
@@ -84,6 +87,18 @@ void showCount(int n, uint8_t r, uint8_t g, uint8_t b, float level) {
   strip.clear();
   n = constrain(n, 0, NUM_LEDS);
   if (n > 0) strip.fill(scaledColor(r, g, b, level), 0, n);  // count 0 hieße bei fill(): bis zum Ende
+  strip.show();
+}
+
+// Auf jedem Ring leuchten die ersten n LEDs, beide Augen zeigen also dasselbe
+void showRings(int n, uint8_t r, uint8_t g, uint8_t b, float level) {
+  strip.clear();
+  n = constrain(n, 0, LEDS_PER_RING);
+  for (int ring = 0; ring < NUM_LEDS / LEDS_PER_RING; ring++) {
+    for (int i = 0; i < n; i++) {
+      strip.setPixelColor(ring * LEDS_PER_RING + i, scaledColor(r, g, b, level));
+    }
+  }
   strip.show();
 }
 
@@ -179,13 +194,16 @@ bool systemTimeValid() {
   return time(nullptr) > 1704067200;
 }
 
-bool syncTimeWithWiFi() {
+// showProgress: Die Ringe füllen sich grün, während verbunden wird
+// (bis 6 LEDs beim WLAN-Verbinden, 7 = WLAN verbunden, 8 = Uhrzeit per NTP da).
+bool syncTimeWithWiFi(bool showProgress) {
   Serial.printf("[WIFI] Verbinde mit %s...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int timeout = 0;
   while (WiFi.status() != WL_CONNECTED && timeout < 30) {
+    if (showProgress) showRings(min(6, timeout / 4 + 1), 0, 255, 0, 0.5f);  // +1 LED alle 2 s
     delay(500);
     Serial.print(".");
     timeout++;
@@ -194,6 +212,7 @@ bool syncTimeWithWiFi() {
   bool ok = false;
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[NTP] Hole Uhrzeit...");
+    if (showProgress) showRings(7, 0, 255, 0, 0.5f);
     sntp_set_time_sync_notification_cb(onNtpSync);
     configTzTime(TIME_ZONE, NTP_SERVER);
 
@@ -210,16 +229,20 @@ bool syncTimeWithWiFi() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 
+  if (showProgress && ok) {
+    showRings(LEDS_PER_RING, 0, 255, 0, 0.5f);   // Ringe voll grün: alles verbunden
+    delay(1000);
+  }
   if (!ok) Serial.println("\n[FEHLER] WLAN/NTP-Verbindung fehlgeschlagen.");
   return ok;
 }
 
-TimeSource getValidTime() {
+TimeSource getValidTime(bool showProgress) {
   // Zeitzone immer setzen, auch wenn WLAN ausfällt, sonst rechnet localtime in UTC
   setenv("TZ", TIME_ZONE, 1);
   tzset();
 
-  if (syncTimeWithWiFi()) {
+  if (syncTimeWithWiFi(showProgress)) {
     return TIME_NTP;
   }
 
@@ -302,7 +325,15 @@ void goToDeepSleepUntilNextSunrise() {
   time_t now = time(nullptr);
   time_t wakeAt = nextSunriseStart(now + WAKE_MARGIN_SEC + 1) - WAKE_MARGIN_SEC;
   printTime("[SLEEP] Naechster Sonnenaufgang ab", wakeAt + WAKE_MARGIN_SEC);
-  goToDeepSleep(wakeAt > now ? wakeAt - now : 1);
+
+  uint64_t sleepSeconds = wakeAt > now ? wakeAt - now : 1;
+  if (sleepSeconds > DRIFT_CHECK_MIN_SEC) {
+    // Zwischenstopp: Selbst bei 10 % Drift wacht der Chip so noch vor dem Sonnenaufgang auf,
+    // holt die Uhrzeit neu und schläft den kurzen Rest dann genau.
+    sleepSeconds = sleepSeconds * 9 / 10;
+    Serial.println("[SLEEP] Zwischenstopp zum Nachstellen der Uhr eingeplant.");
+  }
+  goToDeepSleep(sleepSeconds);
 }
 
 // ==========================================
@@ -381,7 +412,10 @@ void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
 // STATUS & TESTMENÜ
 // ==========================================
 
-// Anzeige nach jedem Reset: Farbe = Zeitquelle, Anzahl LEDs = Stunden bis zur Weckzeit
+// Anzeige nach jedem Reset, direkt nach dem grünen Füllen beim WLAN-Verbinden:
+//   gelb  = kein WLAN, interne Uhr läuft     rot = keine Uhrzeit, Wecker geht nicht
+//   dann  orange = volle Stunden bis zur Weckzeit (1 LED = 1 h, erst Ring 1, dann Ring 2)
+//   dann  blau   = restliche Minuten in 10-Minuten-Schritten (auf beiden Ringen gleich)
 void showStatus(TimeSource source) {
   if (esp_reset_reason() == ESP_RST_BROWNOUT) {
     Serial.println("[STATUS] Letzter Neustart durch Spannungseinbruch (Brownout)!");
@@ -394,18 +428,28 @@ void showStatus(TimeSource source) {
     return;
   }
 
+  if (source == TIME_RTC) {
+    showRings(LEDS_PER_RING, 255, 160, 0, 0.5f);   // gelb
+    delay(1500);
+  }
+
   time_t now = time(nullptr);
   time_t alarm = sunriseStartAtOrAfter(now) + SUNRISE_MINUTES * 60;
-  int hours = max(1, (int)((alarm - now + 3599) / 3600));
+  long remaining = (long)(alarm - now);
+  int hours = remaining / 3600;
+  int tenMinutes = (remaining % 3600) / 600;
   printTime("[STATUS] Naechste Weckzeit:", alarm);
-  Serial.printf("[STATUS] Zeitquelle: %s, noch %d Std.\n", source == TIME_NTP ? "NTP" : "RTC", hours);
+  Serial.printf("[STATUS] Zeitquelle: %s, noch %d Std. %d min\n",
+                source == TIME_NTP ? "NTP" : "RTC", hours, (int)((remaining % 3600) / 60));
 
-  if (source == TIME_NTP) {
-    showCount(hours, 0, 255, 0, 0.6f);     // grün: WLAN + NTP ok
-  } else {
-    showCount(hours, 255, 160, 0, 0.6f);   // gelb: nur interne Uhr
-  }
-  delay(5000);
+  clearLEDs();
+  delay(300);
+  showCount(hours, 255, 100, 0, 0.6f);        // orange: Stunden
+  delay(4000);
+  clearLEDs();
+  delay(300);
+  showRings(tenMinutes, 0, 80, 255, 0.6f);    // blau: 10-Minuten-Schritte
+  delay(3000);
   clearLEDs();
 }
 
@@ -512,7 +556,7 @@ void setup() {
 
   bool trialRequested = menuRequested && runTestMenu();
 
-  TimeSource source = getValidTime();
+  TimeSource source = getValidTime(afterReset);
   if (afterReset) {
     showStatus(source);
   }

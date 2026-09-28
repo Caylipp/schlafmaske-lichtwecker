@@ -39,10 +39,10 @@ Einschalten / Aufwachen
   └─ nur nach Reset: 3 s Fenster (erste LED blau) für USB-Upload und Testmenü
   └─ Uhrzeit holen: WLAN + NTP ─(Fehler)─> interne RTC-Zeit ─(ungültig)─> 60 s schlafen, neu versuchen
   └─ nur nach Reset: Statusanzeige (siehe Testen)
-  └─ steht der Sonnenaufgang in ≤ 2 min an (oder hat vor ≤ 10 min begonnen)?
+  └─ steht der Sonnenaufgang in ≤ 2 min an (oder hat vor ≤ 30 min begonnen)?
         ja   ─> bis zum Start warten ─> Sonnenaufgang (bei Verspätung passend einsteigen)
         nein ─> nichts tun
-  └─ Deep Sleep bis 2 min vor dem nächsten Sonnenaufgang
+  └─ Deep Sleep bis 2 min vor dem nächsten Sonnenaufgang (bei > 1 h mit Zwischenstopp zum Nachstellen der Uhr)
 ```
 
 **Ablauf des Weckers** mit den Standardwerten (Weckzeit 05:30):
@@ -65,16 +65,17 @@ Zum Testen, ohne auf den Morgen zu warten, gibt es das [Testmenü](#testen).
 | Bauteil | Details |
 |---|---|
 | Mikrocontroller | **Seeed Studio XIAO ESP32C3** |
-| LEDs | 2 NeoPixel-Ringe à 8 LEDs = 16 LEDs, hintereinander geschaltet (GRB, 800 kHz, genauer Typ undokumentiert), Daten an **GPIO 2** (XIAO-Pin D0) |
+| LEDs | 2× Joycabin WS2812-Ring (8 LEDs, 5050) = 16 LEDs, hintereinander geschaltet, **Plus am 3V3-Pin**, Daten an **GPIO 2** (XIAO-Pin D0) |
 | Taster | BOOT-Taster des XIAO an **GPIO 9** (aktiv LOW, interner Pull-up) |
 | LED-Abschaltung | optional: MOSFET/Load-Switch an `LED_POWER_PIN` (Standard: keiner) |
-| Stromversorgung | bisher USB-C; Akku noch nicht festgelegt |
+| Akku | LiPo 500 mAh an den BAT-Pads des XIAO, Laden über USB-C |
 
 GPIO 2 ist ein Strapping-Pin. Zwischendurch wurde deshalb GPIO 4 getestet. Mit dem vorhandenen Aufbau gab es an GPIO 2 aber keine Boot-Probleme, darum wurde zurückgewechselt.
 
 Die maximale Helligkeit ist per Software auf 76/255 (≈ 30 %) begrenzt. Bei voll weißem Licht ziehen die 16 LEDs trotzdem noch ungefähr **0,3 A**.
 
-> **Wichtig für den Akkubetrieb:**
+> **Wichtig für den Akkubetrieb:** Mit dem jetzigen Aufbau hält der Akku nur **~1–1,5 Tage**, also **täglich laden**. Rechnung, Messmöglichkeiten und Umbau (alles mit Teilen aus dem Elegoo-Kit) stehen in [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.md).
+>
 > - **Die BOOT-Taste (GPIO 9) kann den Chip nicht aus dem Deep Sleep wecken**, das geht beim ESP32-C3 nur an GPIO 0–5. Während der Wecker läuft, funktioniert sie trotzdem. Wer per Taste aufwecken will, schließt einen Taster an GPIO 0–5 an und stellt `BUTTON_PIN` um.
 > - **Ohne `LED_POWER_PIN` ziehen die LEDs auch im Deep Sleep Strom**, je nach Typ ~0,5–1 mA pro LED, zusammen ~8–16 mA. Ein kleiner Akku ist damit in wenigen Tagen leer. Abhilfe: LED-Versorgung über einen MOSFET schalten und dessen Gate an `LED_POWER_PIN` legen.
 
@@ -130,7 +131,8 @@ Alle Einstellungen stehen oben in `lichtwecker.ino`:
 | `DAYLIGHT_MINUTES` | 30 | Dauer des pulsierenden Lichts nach der Weckzeit |
 | `MAX_BRIGHTNESS` | 76 | Obergrenze pro Farbkanal (0–255) |
 | `WAKE_MARGIN_SEC` | 120 | so viel früher aufwachen, für WLAN/NTP |
-| `LATE_GRACE_SEC` | 600 | bis zu dieser Verspätung wird noch geweckt |
+| `LATE_GRACE_SEC` | 1800 | bis zu dieser Verspätung wird noch passend eingestiegen |
+| `DRIFT_CHECK_MIN_SEC` | 3600 | längeren Schlaf teilen und zwischendurch die Uhr nachstellen |
 | `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS` | | Hardware |
 | `TIME_ZONE`, `NTP_SERVER` | Berlin, `de.pool.ntp.org` | Zeit |
 
@@ -148,10 +150,15 @@ USB abziehen (Akkubetrieb!), **RESET** drücken, keine Taste mehr anfassen:
 | Anzeige | Bedeutung |
 |---|---|
 | erste LED blau (3 s) | Fenster fürs Testmenü, einfach abwarten |
-| *N* LEDs **grün** (5 s), 1 LED = 1 Stunde: erst ein Ring voll (1–8), dann weiter im zweiten (9–16) | WLAN und Uhrzeit ok, Wecker klingelt in *N* Stunden → gute Nacht |
-| *N* LEDs **gelb** | kein WLAN, die interne Uhr läuft aber, Wecker in *N* Stunden (Uhr kann leicht abweichen) |
+| beide Ringe füllen sich **grün** | WLAN wird verbunden (7 LEDs = WLAN da, 8 = Uhrzeit da) |
+| Ringe voll **grün** | WLAN und Uhrzeit ok |
+| Ringe voll **gelb** | kein WLAN, die interne Uhr läuft aber (Wecker funktioniert, kann leicht abweichen) |
 | 3× **rot** blinken | keine gültige Uhrzeit, der **Wecker funktioniert nicht**. WLAN prüfen, neuer Versuch alle 60 s |
 | 3× **lila** blinken | der letzte Neustart kam durch einen Spannungseinbruch: Akku fast leer oder LEDs ziehen zu viel Strom |
+| danach **orange** (4 s) | volle **Stunden** bis zur Weckzeit, 1 LED = 1 h, erst Ring 1, dann Ring 2 |
+| danach **blau** (3 s) | restliche **Minuten** in 10er-Schritten, auf beiden Ringen gleich |
+
+Beispiel: RESET um 22:00, Wecker 05:30 → grün füllen → **7 orange** → **3 blau** = 7 h 30 min.
 
 ### Testmenü
 
@@ -181,11 +188,12 @@ Behoben aus dem Code-Review von v1:
 | Der „NTP-Sync“ nach dem Deep Sleep korrigierte nie etwas: `getLocalTime()` meldete sofort Erfolg, weil die Zeit schon gültig war | Es wird auf die echte NTP-Antwort gewartet (Sync-Callback) |
 | Weckzeiten um Mitternacht (00:00–00:04) funktionierten nicht | Die Berechnung erfolgt über echte Zeitpunkte statt „heute“; getestet für Mitternacht und beide Zeitumstellungen |
 | Die Warteschleife vor dem Alarm konnte endlos hängen und ignorierte die Taste | Die Wartezeit ist auf 2 min begrenzt, die Taste überspringt den Wecker |
-| Weckte der Chip verspätet auf, begann der Sonnenaufgang von vorn oder fiel aus | Bis 10 min Verspätung steigt der Wecker an der passenden Stelle ein |
+| Weckte der Chip verspätet auf, begann der Sonnenaufgang von vorn oder fiel aus | Bis 30 min Verspätung steigt der Wecker an der passenden Stelle ein |
 | Lineare Helligkeitsrampe mit `setBrightness()` (grob, verliert Farbe) | Gammakorrigierte Rampe, Farben werden direkt skaliert |
 | Tastenweckung an GPIO 9 erzeugte einen Fehler (auf Hardware bestätigt) | Tastenweckung wird nur an gültigen Pins (GPIO 0–5) aktiviert |
 | Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
 | 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
+| Ein langer Deep Sleep lief ohne Korrektur durch; der interne Takt driftet um einige Prozent, der Wecker kam dadurch zu spät oder fiel aus | Zwischenstopp nach 90 % des Schlafs zum Nachstellen der Uhr; mehr Kulanz bei Verspätung (`LATE_GRACE_SEC` = Sonnenaufgangsdauer) |
 | Testen nur über `TEST_MODE` und Neu-Flashen, sonst Warten bis zum Morgen | Statusanzeige nach jedem Reset und Testmenü per BOOT-Taste (LED-Test, Zeitraffer, Probelauf) |
 
 ## Offene Punkte
@@ -203,6 +211,8 @@ Behoben aus dem Code-Review von v1:
 - v1.1 mit dem Testmenü auf der Hardware testen und dann als `v1.1` taggen
 - Auf PlatformIO umsteigen (`platformio.ini` mit festen Versionen von Core und Library), damit Builds reproduzierbar sind
 - Akkuspannung über Spannungsteiler + ADC messen, in der Statusanzeige zeigen und bei niedrigem Stand warnen
+
+Details und Reihenfolge: [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.md)
 
 **Konfiguration**
 - Weckzeit ohne Neu-Flashen setzen: WiFiManager-Captive-Portal oder BLE, Speicherung in `Preferences` (NVS)
@@ -227,6 +237,8 @@ Behoben aus dem Code-Review von v1:
 ├── README.md
 ├── concept.md              Produktidee, Bewertung, Ideen
 ├── .gitignore
+├── docs/
+│   └── akku-und-ausbauplan.md   Akkulaufzeit, Akku-Überwachung, Umbau, Plan Einstellungsseite
 └── lichtwecker/
     ├── lichtwecker.ino     aktueller Sketch
     ├── secrets.example.h   Vorlage für Zugangsdaten
