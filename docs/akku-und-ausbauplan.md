@@ -7,6 +7,8 @@ Stand: 28.09.2026. Grundlage ist die aktuelle Hardware:
 
 Alle Stromwerte sind Schätzungen aus Datenblättern und typischen Messwerten, nicht selbst gemessen.
 
+> **Entscheidung (28.09.2026):** Der Hardware-Umbau (Abschnitt 2a/2b) ist **zurückgestellt**. Bis dahin wird täglich geladen, siehe [1b](#1b-laden-ohne-umbau).
+
 ## 1. Wie lange hält der Akku?
 
 ### Verbrauch
@@ -33,6 +35,22 @@ Nutzbar sind etwa **425 mAh**, also ~85 % der 500 mAh. Weil die LEDs am 3,3-V-Re
 **Wichtigste Erkenntnis:** ~80 % des Akkus verbrauchen die LEDs, während sie *aus* sind. Die ruhenden WS2812-Chips ziehen dauerhaft Strom, der Wecker selbst kostet wenig.
 
 Beispiel mit dem aktuellen Aufbau: Du lädst bis 18 Uhr und trägst die Maske nachts. Bis zum Wecken um 05:30 sind ~150–200 mAh verbraucht, das geht gut. In der zweiten Nacht wäre der Akku gegen Morgen leer.
+
+### 1b. Laden ohne Umbau
+
+Der XIAO ESP32C3 lädt mit **~330–380 mA** (Seeed-Forum, gemessen) und bis ~80 % mit konstantem Strom, danach langsamer.
+
+| Ladedauer pro Tag | nachgeladen | Verbrauch pro Tag | Ergebnis |
+|---|---|---|---|
+| 30 min | ~150–175 mAh | ~300 mAh | **reicht nicht**, nach 2–3 Tagen leer |
+| 1 h | ~300 mAh | ~300 mAh | knapp ausgeglichen |
+| **1,5 h** | ~400 mAh (bis voll) | ~300 mAh | **dauerhaft ok** |
+
+- **Bestes Timing:** abends direkt vor dem Schlafengehen, z. B. 20:30–22:00. Der Akku ist dann voll, wenn er nachts gebraucht wird. Bis zum Wecken sind nur ~130 mAh verbraucht, der Rest ist Reserve.
+- Morgens laden ist schlechter: Den ganzen Tag lang verlieren die LEDs ~10 mA, abends ist schon ein Drittel weg.
+- 500 mAh mit ~350 mA laden entspricht ~0,7 C. Das ist für normale LiPo-Zellen unkritisch.
+- **Stromkosten:** ~0,3 Ah × 3,7 V ≈ 1,1 Wh pro Tag im Akku, mit Ladeverlusten ~1,5 Wh aus der Steckdose. Das sind ~0,55 kWh pro Jahr, also **~20 Cent pro Jahr**.
+- **Mit dem S8050-Umbau (2b)** sinkt der Verbrauch auf ~60–100 mAh pro Tag. Dann reichen die gewünschten **30 Minuten vor dem Schlafen**.
 
 ## 2. Möglichkeiten zur Akku-Überwachung
 
@@ -97,7 +115,7 @@ D3 (GPIO 5) ─[330 Ω]─ B (Basis)
 
 ## 3. Weckzeit ohne Neukompilieren einstellen (Plan)
 
-### Empfehlung: Einstellungsseite im Heim-WLAN
+### Empfehlung: Einstellungsseite im Heim-WLAN (**umgesetzt**, siehe [BEDIENUNGSANLEITUNG.md](../BEDIENUNGSANLEITUNG.md))
 
 ```
 RESET → Menü → Modus 4 „Einstellungen“ (lang drücken)
