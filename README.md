@@ -1,7 +1,7 @@
 # Schlafmaske-Lichtwecker
 
 Eine Schlafmaske mit eingebauten LEDs, die vor der Weckzeit einen Sonnenaufgang simuliert und so sanft weckt.
-Die Steuerung übernimmt ein ESP32-C3 mit einem NeoPixel-Streifen (WS2812). Die Uhrzeit kommt per WLAN über NTP. Zwischen den Weckzeiten schläft der Controller im Deep Sleep.
+Die Steuerung übernimmt ein ESP32-C3 mit zwei NeoPixel-Ringen (je 8 LEDs, einer pro Auge). Die Uhrzeit kommt per WLAN über NTP. Zwischen den Weckzeiten schläft der Controller im Deep Sleep.
 
 Die Produktidee, eine Bewertung und weitere Ideen stehen in [concept.md](concept.md).
 
@@ -65,18 +65,18 @@ Zum Testen, ohne auf den Morgen zu warten, gibt es das [Testmenü](#testen).
 | Bauteil | Details |
 |---|---|
 | Mikrocontroller | **Seeed Studio XIAO ESP32C3** |
-| LEDs | 32× NeoPixel (GRB, 800 kHz, genauer Typ undokumentiert), Daten an **GPIO 2** (XIAO-Pin D0) |
+| LEDs | 2 NeoPixel-Ringe à 8 LEDs = 16 LEDs, hintereinander geschaltet (GRB, 800 kHz, genauer Typ undokumentiert), Daten an **GPIO 2** (XIAO-Pin D0) |
 | Taster | BOOT-Taster des XIAO an **GPIO 9** (aktiv LOW, interner Pull-up) |
 | LED-Abschaltung | optional: MOSFET/Load-Switch an `LED_POWER_PIN` (Standard: keiner) |
 | Stromversorgung | bisher USB-C; Akku noch nicht festgelegt |
 
 GPIO 2 ist ein Strapping-Pin. Zwischendurch wurde deshalb GPIO 4 getestet. Mit dem vorhandenen Aufbau gab es an GPIO 2 aber keine Boot-Probleme, darum wurde zurückgewechselt.
 
-Die maximale Helligkeit ist per Software auf 76/255 (≈ 30 %) begrenzt. Bei voll weißem Licht ziehen 32 LEDs trotzdem noch ungefähr **0,5–0,6 A**.
+Die maximale Helligkeit ist per Software auf 76/255 (≈ 30 %) begrenzt. Bei voll weißem Licht ziehen die 16 LEDs trotzdem noch ungefähr **0,3 A**.
 
 > **Wichtig für den Akkubetrieb:**
 > - **Die BOOT-Taste (GPIO 9) kann den Chip nicht aus dem Deep Sleep wecken**, das geht beim ESP32-C3 nur an GPIO 0–5. Während der Wecker läuft, funktioniert sie trotzdem. Wer per Taste aufwecken will, schließt einen Taster an GPIO 0–5 an und stellt `BUTTON_PIN` um.
-> - **Ohne `LED_POWER_PIN` ziehen die LEDs auch im Deep Sleep Strom**, je nach Typ ~0,5–1 mA pro LED, zusammen ~15–30 mA. Ein kleiner Akku ist damit in wenigen Tagen leer. Abhilfe: LED-Versorgung über einen MOSFET schalten und dessen Gate an `LED_POWER_PIN` legen.
+> - **Ohne `LED_POWER_PIN` ziehen die LEDs auch im Deep Sleep Strom**, je nach Typ ~0,5–1 mA pro LED, zusammen ~8–16 mA. Ein kleiner Akku ist damit in wenigen Tagen leer. Abhilfe: LED-Versorgung über einen MOSFET schalten und dessen Gate an `LED_POWER_PIN` legen.
 
 ## Einrichtung
 
@@ -148,7 +148,7 @@ USB abziehen (Akkubetrieb!), **RESET** drücken, keine Taste mehr anfassen:
 | Anzeige | Bedeutung |
 |---|---|
 | erste LED blau (3 s) | Fenster fürs Testmenü, einfach abwarten |
-| *N* LEDs **grün** (5 s) | WLAN und Uhrzeit ok, Wecker klingelt in *N* Stunden → gute Nacht |
+| *N* LEDs **grün** (5 s), 1 LED = 1 Stunde: erst ein Ring voll (1–8), dann weiter im zweiten (9–16) | WLAN und Uhrzeit ok, Wecker klingelt in *N* Stunden → gute Nacht |
 | *N* LEDs **gelb** | kein WLAN, die interne Uhr läuft aber, Wecker in *N* Stunden (Uhr kann leicht abweichen) |
 | 3× **rot** blinken | keine gültige Uhrzeit, der **Wecker funktioniert nicht**. WLAN prüfen, neuer Versuch alle 60 s |
 | 3× **lila** blinken | der letzte Neustart kam durch einen Spannungseinbruch: Akku fast leer oder LEDs ziehen zu viel Strom |
@@ -163,7 +163,7 @@ USB abziehen (Akkubetrieb!), **RESET** drücken, keine Taste mehr anfassen:
 
 | Modus | Test | Was er prüft | Dauer |
 |---|---|---|---|
-| 1 | **LED-Test**: Rot, Grün, Blau, Weiß → Lauflicht über jede einzelne LED → 10 s Weiß mit maximaler Helligkeit | defekte LEDs, Unterbrechung im Streifen (Lauflicht bleibt stehen), Stromversorgung unter Last (startet das Board neu → danach blinkt es lila) | ~17 s |
+| 1 | **LED-Test**: Rot, Grün, Blau, Weiß → Lauflicht über jede einzelne LED → 10 s Weiß mit maximaler Helligkeit | defekte LEDs, Unterbrechung im Streifen (Lauflicht bleibt stehen), Stromversorgung unter Last (startet das Board neu → danach blinkt es lila). Das Lauflicht zeigt auch, welcher Ring zuerst kommt | ~16 s |
 | 2 | **Sonnenaufgang im Zeitraffer** (1 s = 1 min) | Farben und Helligkeitsverlauf | 60 s |
 | 3 | **Probelauf**: Menü wird verlassen, das Board geht in den Deep Sleep, wacht per Timer auf, synchronisiert die Zeit und spielt ~2,5 min später den Sonnenaufgang im Zeitraffer | die komplette Kette wie nachts: Deep Sleep → Aufwachen → WLAN → Wecker | ~3,5 min |
 
