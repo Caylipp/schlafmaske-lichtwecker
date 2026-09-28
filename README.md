@@ -42,18 +42,19 @@ Einschalten / Aufwachen
   └─ steht der Sonnenaufgang in ≤ 2 min an (oder hat vor ≤ 30 min begonnen)?
         ja   ─> bis zum Start warten ─> Sonnenaufgang (bei Verspätung passend einsteigen)
         nein ─> nichts tun
-  └─ Deep Sleep bis 2 min vor dem nächsten Sonnenaufgang (bei > 1 h mit Zwischenstopp zum Nachstellen der Uhr)
+  └─ Deep Sleep bis 2 min vor dem nächsten Sonnenaufgang
+     (optional mit Zwischenstopp zum Nachstellen der Uhr, zurzeit für den Drift-Test abgeschaltet)
 ```
 
-**Ablauf des Weckers** mit den Standardwerten (Weckzeit 05:30):
+**Ablauf des Weckers** mit den Standardwerten (Weckzeit 08:00):
 
 | Phase | Zeit | Licht |
 |---|---|---|
-| 1 | 05:00–05:15 | Rot → Orange |
-| 2 | 05:15–05:25 | Orange → Pfirsich |
-| 3 | 05:25–05:30 | → Weiß |
-| 4 | 05:30–06:00 | Weckzeit erreicht: Weiß pulsierend |
-| – | ab 06:00 | aus, zurück in den Deep Sleep |
+| 1 | 07:30–07:45 | Rot → Orange |
+| 2 | 07:45–07:55 | Orange → Pfirsich |
+| 3 | 07:55–08:00 | → Weiß |
+| 4 | 08:00–08:30 | Weckzeit erreicht: Weiß pulsierend |
+| – | ab 08:30 | aus, zurück in den Deep Sleep |
 
 In den Phasen 1 bis 3 steigt die Helligkeit gleichmäßig und gammakorrigiert von 0 auf die eingestellte Maximalhelligkeit.
 **Taste während des Weckers:** Der Wecker wird beendet. **Taste in den 2 min davor:** Der Wecker wird für heute übersprungen.
@@ -93,7 +94,7 @@ Die maximale Helligkeit ist per Software auf 76/255 (≈ 30 %) begrenzt. Bei vol
 
 ```sh
 cp lichtwecker/secrets.example.h lichtwecker/secrets.h
-# WLAN-Name und -Passwort in secrets.h eintragen
+# Namen und Passwörter der WLANs in secrets.h eintragen (WLAN 1 = Standard, WLAN 2 = Ausweich)
 ```
 
 `secrets.h` steht in `.gitignore` und wird nie committet.
@@ -122,20 +123,21 @@ arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
 
 ### Konfiguration
 
-**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer und Helligkeit** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 4, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen.
+**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer, Helligkeit und bevorzugtes WLAN** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 4, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen.
 
 Oben in `lichtwecker.ino` stehen nur noch Standardwerte und Hardware-Konstanten:
 
 | Konstante | Standard | Bedeutung |
 |---|---|---|
-| `DEFAULT_ALARM_HOUR` / `DEFAULT_ALARM_MINUTE` | 5 / 30 | Weckzeit, solange nichts gespeichert ist |
+| `DEFAULT_ALARM_HOUR` / `DEFAULT_ALARM_MINUTE` | 8 / 0 | Weckzeit, solange nichts gespeichert ist. Einmalige Umstellung älterer Geräte von 05:30 auf 08:00 über `SETTINGS_VERSION` |
 | `DEFAULT_SUNRISE_MINUTES` / `DEFAULT_DAYLIGHT_MINUTES` | 30 / 30 | Sonnenaufgang vor, pulsierendes Licht nach der Weckzeit |
 | `DEFAULT_MAX_BRIGHTNESS` | 76 | Obergrenze pro Farbkanal (0–255) |
 | `WAKE_MARGIN_SEC` | 120 | so viel früher aufwachen, für WLAN/NTP |
-| `DRIFT_CHECK_MIN_SEC` | 3600 | längeren Schlaf teilen und zwischendurch die Uhr nachstellen |
+| `DRIFT_CHECK_ENABLED` | **`false`** (Test) | Nacht-Abgleich: längeren Schlaf (> `DRIFT_CHECK_MIN_SEC`) teilen und zwischendurch die Uhr nachstellen. Siehe [Drift-Test](#drift-test-läuft) |
+| `DRIFT_LOG_MIN_SEC` / `DRIFT_LOG_SIZE` | 1800 / 30 | Drift-Protokoll: nur Abgleiche nach ≥ 30 min, max. 30 Einträge |
 | `WEB_TIMEOUT_MS` | 5 min | so lange bleibt die Einstellungsseite ohne Aufruf online |
 | `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS`, `LEDS_PER_RING` | | Hardware |
-| `TIME_ZONE`, `NTP_SERVER`, `HOSTNAME` | Berlin, `de.pool.ntp.org`, `lichtwecker` | Zeit und Netzwerk |
+| `TIME_ZONE`, `NTP_SERVER`, `HOSTNAME`, `AP_SSID` | Berlin, `de.pool.ntp.org`, `lichtwecker`, `Lichtwecker` | Zeit und Netzwerk |
 
 Verspätetes Aufwachen wird bis zur Dauer des Sonnenaufgangs abgefangen: Der Wecker steigt dann an der passenden Stelle ein.
 
@@ -150,10 +152,22 @@ Kurzfassung:
   1. LED-Test
   2. Zeitraffer-Vorschau
   3. Probelauf mit echtem Deep Sleep
-  4. Einstellungen im WLAN (`http://lichtwecker.local`)
+  4. Einstellungen (eigenes WLAN „Lichtwecker“, Seite öffnet sich am iPhone von selbst; alternativ `http://lichtwecker.local`)
   5. Wecker an/aus
+  6. WLAN wechseln
 
 **Empfohlen vor der ersten Nacht:** Modus 1 und Modus 3 **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
+
+## Drift-Test (läuft)
+
+**Seit 29.09.2026** ist der Nacht-Abgleich (`DRIFT_CHECK_ENABLED = false`) abgeschaltet. So lässt sich messen, wie stark die interne Uhr des XIAO im Deep Sleep wirklich abweicht.
+
+- **Messung:** Bei jedem NTP-Abgleich vergleicht `recordClockDrift()` die interne Uhr mit der NTP-Zeit, auf Millisekunden genau. War der letzte Abgleich mindestens 30 min her, wird das Ergebnis im Flash gespeichert (Namespace `drift`, Ringpuffer mit 30 Einträgen). Die wichtige Messung ist die morgens: Abend-Check per RESET → Nacht → Aufwachen vor dem Sonnenaufgang.
+- **Auslesen:** Einstellungsseite (Menü-Modus 4) → „Uhr-Abweichung (Test)“, oder die serielle Ausgabe nach RESET (`[DRIFT] …`).
+- **Auswertung:** Maßgeblich ist die Spalte „pro 8 h“. Plus heißt: Die Uhr ging nach, der Wecker kam zu spät.
+  - Unter ~±60 s pro Nacht: Der Nacht-Abgleich ist unnötig und kostet nur Akku.
+  - Deutlich mehr, oder mehr als die Kulanz (Sonnenaufgangsdauer): `DRIFT_CHECK_ENABLED = true` setzen.
+- **Wieder einschalten:** eine Zeile in `lichtwecker.ino`, der Code dafür ist unverändert vorhanden. Die Simulation für den eingeschalteten Zustand steht in [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.md) (Abschnitt 4).
 
 ## Änderungen in v1.1
 
@@ -172,8 +186,9 @@ Behoben aus dem Code-Review von v1:
 | Tastenweckung an GPIO 9 erzeugte einen Fehler (auf Hardware bestätigt) | Tastenweckung wird nur an gültigen Pins (GPIO 0–5) aktiviert |
 | Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
 | 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
-| Ein langer Deep Sleep lief ohne Korrektur durch; der interne Takt driftet um einige Prozent, der Wecker kam dadurch zu spät oder fiel aus | Zwischenstopp nach 90 % des Schlafs zum Nachstellen der Uhr; mehr Kulanz bei Verspätung (`LATE_GRACE_SEC` = Sonnenaufgangsdauer) |
-| Weckzeit nur durch Code-Änderung und Neu-Flashen einstellbar | Einstellungsseite im WLAN, Wecker an/aus, nächsten Wecker aussetzen |
+| Ein langer Deep Sleep lief ohne Korrektur durch; der interne Takt driftet um einige Prozent, der Wecker kam dadurch zu spät oder fiel aus | Zwischenstopp nach 90 % des Schlafs zum Nachstellen der Uhr (**zurzeit für den Drift-Test abgeschaltet**); mehr Kulanz bei Verspätung (bis zur Sonnenaufgangsdauer) |
+| Weckzeit nur durch Code-Änderung und Neu-Flashen einstellbar | Einstellungsseite (eigenes WLAN mit Captive Portal + `lichtwecker.local`), Wecker an/aus, nächsten Wecker aussetzen |
+| Nur ein WLAN fest im Code | Zwei WLANs in `secrets.h`, Auswahl über Menü/Seite, automatischer Ausweich auf das andere |
 | Testen nur über `TEST_MODE` und Neu-Flashen, sonst Warten bis zum Morgen | Statusanzeige nach jedem Reset und Testmenü per BOOT-Taste (LED-Test, Zeitraffer, Probelauf) |
 
 ## Offene Punkte

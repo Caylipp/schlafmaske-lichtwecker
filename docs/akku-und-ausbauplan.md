@@ -34,7 +34,7 @@ Nutzbar sind etwa **425 mAh**, also ~85 % der 500 mAh. Weil die LEDs am 3,3-V-Re
 
 **Wichtigste Erkenntnis:** ~80 % des Akkus verbrauchen die LEDs, während sie *aus* sind. Die ruhenden WS2812-Chips ziehen dauerhaft Strom, der Wecker selbst kostet wenig.
 
-Beispiel mit dem aktuellen Aufbau: Du lädst bis 18 Uhr und trägst die Maske nachts. Bis zum Wecken um 05:30 sind ~150–200 mAh verbraucht, das geht gut. In der zweiten Nacht wäre der Akku gegen Morgen leer.
+Beispiel mit dem aktuellen Aufbau: Du lädst bis 18 Uhr und trägst die Maske nachts. Bis zum Wecken sind ~150–200 mAh verbraucht, das geht gut. In der zweiten Nacht wäre der Akku gegen Morgen leer.
 
 ### 1b. Laden ohne Umbau
 
@@ -120,7 +120,8 @@ D3 (GPIO 5) ─[330 Ω]─ B (Basis)
 ```
 RESET → Menü → Modus 4 „Einstellungen“ (lang drücken)
       → Ringe „atmen“ langsam blau = Board ist online (max. 5 min)
-      → iPhone: http://lichtwecker.local öffnen
+      → iPhone: WLAN „Lichtwecker“ wählen, Seite öffnet sich von selbst
+        (oder im Heim-WLAN http://lichtwecker.local)
       → Weckzeit setzen, speichern
       → Board zeigt die neue Weckzeit (orange Stunden / blaue 10-Minuten) und schläft wieder
 ```
@@ -161,7 +162,7 @@ Dein Ablauf: Die Maske ist zu Hause, du gehst ~22 Uhr ins Bett, machst den Abend
 
 | Idee | Nutzen | Aufwand |
 |---|---|---|
-| **Zwischenstopp gegen Uhrdrift** | Der interne Takt kann im Schlaf einige Prozent abweichen. Ohne Korrektur wäre der Wecker bei +3 % jeden Morgen ~10 min zu spät, bei +8 % fiele er oft aus. | **erledigt** (Simulation: in allen Fällen pünktlich) |
+| **Zwischenstopp gegen Uhrdrift** | Der interne Takt kann im Schlaf einige Prozent abweichen. Ohne Korrektur wäre der Wecker bei +3 % jeden Morgen ~10 min zu spät, bei +8 % fiele er oft aus. | eingebaut (Simulation: in allen Fällen pünktlich), **seit 29.09.2026 für den Drift-Test abgeschaltet** (`DRIFT_CHECK_ENABLED`, siehe README) |
 | Snooze | Taste kurz = 9 min Schlummern, lang = aus | klein |
 | Backup-Alarm mit dem aktiven Buzzer aus dem Kit | piept leise, falls man nach X min nicht per Taste bestätigt hat | klein (1 Pin) |
 | Eigener Taster an D2 | Abend-Check ohne RESET, Weckung direkt aus dem Deep Sleep | klein (Löten) |
