@@ -4,7 +4,7 @@
 Schlafmaske mit eingebauten LEDs, die zur Weckzeit einen Sonnenaufgang simulieren und so sanft wecken.
 
 ## Ist-Stand (Code)
-- ESP32 (GPIO 9 als BOOT-Button, deshalb vermutlich ESP32-C3) mit einem NeoPixel-Streifen (32 LEDs, Helligkeit auf 76 von 255 begrenzt).
+- ESP32 (GPIO 9 als BOOT-Button, deshalb vermutlich ESP32-C3) mit zwei NeoPixel-Ringen (je 8 LEDs, einer pro Auge; Helligkeit auf 76 von 255 begrenzt).
 - Holt die Uhrzeit per WLAN über NTP, danach Deep Sleep bis kurz vor dem Alarm. Die Zeit wird im RTC-Speicher über den Schlaf gerettet.
 - Die Sonnenaufgangs-Animation lässt sich per Taste beenden. Es gibt einen Testmodus mit Zeitraffer.
 - Die Weckzeit ist fest im Code eingetragen. Die WLAN-Daten liegen inzwischen in `lichtwecker/secrets.h` (nicht versioniert).

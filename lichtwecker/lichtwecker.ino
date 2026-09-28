@@ -16,7 +16,7 @@
                                    // dafür muss die Taste an GPIO 0-5 (ESP32-C3)
 #define LED_POWER_PIN     -1       // Optional: MOSFET/Load-Switch für die LED-Versorgung, -1 = keiner
 #define LED_POWER_ON      HIGH     // Pegel, bei dem die LEDs Strom bekommen
-#define NUM_LEDS          32
+#define NUM_LEDS          16       // 2 Ringe à 8 LEDs (ein Ring pro Auge), hintereinander geschaltet
 
 const uint8_t MAX_BRIGHTNESS = 76;   // Obergrenze pro Farbkanal (0-255)
 
