@@ -3,7 +3,7 @@
 Eine Schlafmaske mit eingebauten LEDs, die vor der Weckzeit einen Sonnenaufgang simuliert und so sanft weckt.
 Die Steuerung übernimmt ein ESP32-C3 mit zwei NeoPixel-Ringen (je 8 LEDs, einer pro Auge). Die Uhrzeit kommt per WLAN über NTP. Zwischen den Weckzeiten schläft der Controller im Deep Sleep.
 
-Die Produktidee, eine Bewertung und weitere Ideen stehen in [concept.md](concept.md).
+**Bedienung: [BEDIENUNGSANLEITUNG.md](BEDIENUNGSANLEITUNG.md)**. Die Produktidee, eine Bewertung und weitere Ideen stehen in [concept.md](concept.md).
 
 ## Stand
 
@@ -55,7 +55,7 @@ Einschalten / Aufwachen
 | 4 | 05:30–06:00 | Weckzeit erreicht: Weiß pulsierend |
 | – | ab 06:00 | aus, zurück in den Deep Sleep |
 
-In den Phasen 1 bis 3 steigt die Helligkeit gleichmäßig und gammakorrigiert von 0 auf `MAX_BRIGHTNESS`.
+In den Phasen 1 bis 3 steigt die Helligkeit gleichmäßig und gammakorrigiert von 0 auf die eingestellte Maximalhelligkeit.
 **Taste während des Weckers:** Der Wecker wird beendet. **Taste in den 2 min davor:** Der Wecker wird für heute übersprungen.
 
 Zum Testen, ohne auf den Morgen zu warten, gibt es das [Testmenü](#testen).
@@ -122,57 +122,36 @@ arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
 
 ### Konfiguration
 
-Alle Einstellungen stehen oben in `lichtwecker.ino`:
+**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer und Helligkeit** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 4, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen.
+
+Oben in `lichtwecker.ino` stehen nur noch Standardwerte und Hardware-Konstanten:
 
 | Konstante | Standard | Bedeutung |
 |---|---|---|
-| `ALARM_HOUR` / `ALARM_MINUTE` | 5 / 30 | Weckzeit, zu der der Sonnenaufgang fertig ist |
-| `SUNRISE_MINUTES` | 30 | Dauer des Sonnenaufgangs vor der Weckzeit |
-| `DAYLIGHT_MINUTES` | 30 | Dauer des pulsierenden Lichts nach der Weckzeit |
-| `MAX_BRIGHTNESS` | 76 | Obergrenze pro Farbkanal (0–255) |
+| `DEFAULT_ALARM_HOUR` / `DEFAULT_ALARM_MINUTE` | 5 / 30 | Weckzeit, solange nichts gespeichert ist |
+| `DEFAULT_SUNRISE_MINUTES` / `DEFAULT_DAYLIGHT_MINUTES` | 30 / 30 | Sonnenaufgang vor, pulsierendes Licht nach der Weckzeit |
+| `DEFAULT_MAX_BRIGHTNESS` | 76 | Obergrenze pro Farbkanal (0–255) |
 | `WAKE_MARGIN_SEC` | 120 | so viel früher aufwachen, für WLAN/NTP |
-| `LATE_GRACE_SEC` | 1800 | bis zu dieser Verspätung wird noch passend eingestiegen |
 | `DRIFT_CHECK_MIN_SEC` | 3600 | längeren Schlaf teilen und zwischendurch die Uhr nachstellen |
-| `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS` | | Hardware |
-| `TIME_ZONE`, `NTP_SERVER` | Berlin, `de.pool.ntp.org` | Zeit |
+| `WEB_TIMEOUT_MS` | 5 min | so lange bleibt die Einstellungsseite ohne Aufruf online |
+| `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS`, `LEDS_PER_RING` | | Hardware |
+| `TIME_ZONE`, `NTP_SERVER`, `HOSTNAME` | Berlin, `de.pool.ntp.org`, `lichtwecker` | Zeit und Netzwerk |
 
-Jede Änderung erfordert bisher ein erneutes Flashen.
+Verspätetes Aufwachen wird bis zur Dauer des Sonnenaufgangs abgefangen: Der Wecker steigt dann an der passenden Stelle ein.
 
-## Testen
+## Bedienung & Testen
 
-Alles funktioniert **ohne Computer**. Rückmeldung gibt es nur über die LEDs, die serielle Ausgabe (115200 Baud) zeigt zusätzlich Details.
-Wichtig: **Erst RESET drücken, dann BOOT.** Wer BOOT schon beim Reset hält, startet den Upload-Modus.
+**Die Bedienung für den Alltag steht in der [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md):** Abend-Check, LED-Signale, Wecker ausschalten, Menü, Einstellungsseite, Laden.
 
-### Check vor dem Schlafen
-
-USB abziehen (Akkubetrieb!), **RESET** drücken, keine Taste mehr anfassen:
-
-| Anzeige | Bedeutung |
-|---|---|
-| erste LED blau (3 s) | Fenster fürs Testmenü, einfach abwarten |
-| beide Ringe füllen sich **grün** | WLAN wird verbunden (7 LEDs = WLAN da, 8 = Uhrzeit da) |
-| Ringe voll **grün** | WLAN und Uhrzeit ok |
-| Ringe voll **gelb** | kein WLAN, die interne Uhr läuft aber (Wecker funktioniert, kann leicht abweichen) |
-| 3× **rot** blinken | keine gültige Uhrzeit, der **Wecker funktioniert nicht**. WLAN prüfen, neuer Versuch alle 60 s |
-| 3× **lila** blinken | der letzte Neustart kam durch einen Spannungseinbruch: Akku fast leer oder LEDs ziehen zu viel Strom |
-| danach **orange** (4 s) | volle **Stunden** bis zur Weckzeit, 1 LED = 1 h, erst Ring 1, dann Ring 2 |
-| danach **blau** (3 s) | restliche **Minuten** in 10er-Schritten, auf beiden Ringen gleich |
-
-Beispiel: RESET um 22:00, Wecker 05:30 → grün füllen → **7 orange** → **3 blau** = 7 h 30 min.
-
-### Testmenü
-
-**RESET** drücken, dann **BOOT drücken, solange die erste LED blau ist**. Nach 2× hellblauem Blinken ist das Menü aktiv:
-- **Modus** = Anzahl hellblauer LEDs
-- **BOOT kurz** = nächster Modus, **BOOT lang (1 s)** = starten (Streifen blitzt weiß auf, dann loslassen)
-- **BOOT während eines Tests** = abbrechen, zurück ins Menü
-- 15 s ohne Tastendruck = Menü verlassen, danach normaler Betrieb mit Statusanzeige
-
-| Modus | Test | Was er prüft | Dauer |
-|---|---|---|---|
-| 1 | **LED-Test**: Rot, Grün, Blau, Weiß → Lauflicht über jede einzelne LED → 10 s Weiß mit maximaler Helligkeit | defekte LEDs, Unterbrechung im Streifen (Lauflicht bleibt stehen), Stromversorgung unter Last (startet das Board neu → danach blinkt es lila). Das Lauflicht zeigt auch, welcher Ring zuerst kommt | ~16 s |
-| 2 | **Sonnenaufgang im Zeitraffer** (1 s = 1 min) | Farben und Helligkeitsverlauf | 60 s |
-| 3 | **Probelauf**: Menü wird verlassen, das Board geht in den Deep Sleep, wacht per Timer auf, synchronisiert die Zeit und spielt ~2,5 min später den Sonnenaufgang im Zeitraffer | die komplette Kette wie nachts: Deep Sleep → Aufwachen → WLAN → Wecker | ~3,5 min |
+Kurzfassung:
+- **RESET** = Abend-Check. Die Ringe füllen sich grün (WLAN), dann zeigen orange LEDs die Stunden und blaue die 10-Minuten bis zum Wecken.
+- **BOOT während des Weckers** = aus.
+- **RESET, dann BOOT** = Menü. Modi:
+  1. LED-Test
+  2. Zeitraffer-Vorschau
+  3. Probelauf mit echtem Deep Sleep
+  4. Einstellungen im WLAN (`http://lichtwecker.local`)
+  5. Wecker an/aus
 
 **Empfohlen vor der ersten Nacht:** Modus 1 und Modus 3 **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
 
@@ -182,7 +161,7 @@ Behoben aus dem Code-Review von v1:
 
 | Problem in v1 | Lösung in v1.1 |
 |---|---|
-| Der Sonnenaufgang begann erst **zur** Weckzeit, volle Helligkeit kam 30 min zu spät | Der Sonnenaufgang startet `SUNRISE_MINUTES` vor der Weckzeit und ist zur Weckzeit fertig |
+| Der Sonnenaufgang begann erst **zur** Weckzeit, volle Helligkeit kam 30 min zu spät | Der Sonnenaufgang startet vor der Weckzeit und ist zur Weckzeit fertig |
 | Ohne WLAN fehlte die Zeitzone, der Wecker ging 1–2 h falsch | `TZ` wird bei jedem Start gesetzt |
 | Der RTC-Fallback rechnete Zeit selbst hoch und ignorierte dabei Wachzeit und Tastenweckung | Die Systemzeit läuft im Deep Sleep ohnehin weiter; sie wird direkt verwendet |
 | Der „NTP-Sync“ nach dem Deep Sleep korrigierte nie etwas: `getLocalTime()` meldete sofort Erfolg, weil die Zeit schon gültig war | Es wird auf die echte NTP-Antwort gewartet (Sync-Callback) |
@@ -194,6 +173,7 @@ Behoben aus dem Code-Review von v1:
 | Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
 | 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
 | Ein langer Deep Sleep lief ohne Korrektur durch; der interne Takt driftet um einige Prozent, der Wecker kam dadurch zu spät oder fiel aus | Zwischenstopp nach 90 % des Schlafs zum Nachstellen der Uhr; mehr Kulanz bei Verspätung (`LATE_GRACE_SEC` = Sonnenaufgangsdauer) |
+| Weckzeit nur durch Code-Änderung und Neu-Flashen einstellbar | Einstellungsseite im WLAN, Wecker an/aus, nächsten Wecker aussetzen |
 | Testen nur über `TEST_MODE` und Neu-Flashen, sonst Warten bis zum Morgen | Statusanzeige nach jedem Reset und Testmenü per BOOT-Taste (LED-Test, Zeitraffer, Probelauf) |
 
 ## Offene Punkte
@@ -215,8 +195,8 @@ Behoben aus dem Code-Review von v1:
 Details und Reihenfolge: [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.md)
 
 **Konfiguration**
-- Weckzeit ohne Neu-Flashen setzen: WiFiManager-Captive-Portal oder BLE, Speicherung in `Preferences` (NVS)
-- Später eine kleine Web-App/PWA mit Web Bluetooth, Wochentagsprofile
+- ~~Weckzeit ohne Neu-Flashen setzen~~ (erledigt: Einstellungsseite im WLAN)
+- Wochentagsprofile und „Morgen später“-Schnellauswahl auf der Einstellungsseite
 
 **Licht**
 - Physikalisch plausibler Farbverlauf (Farbtemperatur ~1800 K → 4000 K)
@@ -235,6 +215,7 @@ Details und Reihenfolge: [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.
 ```
 .
 ├── README.md
+├── BEDIENUNGSANLEITUNG.md      Bedienung im Alltag
 ├── concept.md              Produktidee, Bewertung, Ideen
 ├── .gitignore
 ├── docs/

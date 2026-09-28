@@ -1,5 +1,8 @@
 #include <Adafruit_NeoPixel.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
 #include "time.h"
 #include "esp_sleep.h"
 #include "esp_sntp.h"
@@ -19,18 +22,18 @@
 #define NUM_LEDS          16       // 2 Ringe à 8 LEDs (ein Ring pro Auge), hintereinander geschaltet
 #define LEDS_PER_RING     8
 
-const uint8_t MAX_BRIGHTNESS = 76;   // Obergrenze pro Farbkanal (0-255)
-
 const char* NTP_SERVER    = "de.pool.ntp.org";
 const char* TIME_ZONE     = "CET-1CEST,M3.5.0,M10.5.0/3";
+const char* HOSTNAME      = "lichtwecker";   // Einstellungsseite: http://lichtwecker.local
 
-const int ALARM_HOUR      = 5;     // Weckstunde   (Sonnenaufgang ist zu dieser Zeit fertig)
-const int ALARM_MINUTE    = 30;    // Weckminute
+// Standardwerte. Geändert werden sie über die Einstellungsseite, dort gespeicherte Werte haben Vorrang.
+const int DEFAULT_ALARM_HOUR       = 5;    // Weckzeit (Sonnenaufgang ist zu dieser Zeit fertig)
+const int DEFAULT_ALARM_MINUTE     = 30;
+const int DEFAULT_SUNRISE_MINUTES  = 30;   // Dauer des Sonnenaufgangs vor der Weckzeit
+const int DEFAULT_DAYLIGHT_MINUTES = 30;   // Dauer des pulsierenden Lichts nach der Weckzeit
+const int DEFAULT_MAX_BRIGHTNESS   = 76;   // Obergrenze pro Farbkanal (0-255)
 
-const int SUNRISE_MINUTES = 30;    // Dauer des Sonnenaufgangs vor der Weckzeit
-const int DAYLIGHT_MINUTES = 30;   // Dauer des pulsierenden Lichts nach der Weckzeit
 const int WAKE_MARGIN_SEC = 120;   // So viel früher aufwachen (WLAN/NTP-Sync)
-const int LATE_GRACE_SEC  = SUNRISE_MINUTES * 60;  // Zu spät aufgewacht: bis dahin wird noch passend eingestiegen
 const int DRIFT_CHECK_MIN_SEC = 3600; // Längeren Schlaf teilen: nach 90 % aufwachen und Uhr nachstellen,
                                       // weil der interne Takt im Deep Sleep um einige Prozent driftet
 
@@ -38,6 +41,7 @@ const int DRIFT_CHECK_MIN_SEC = 3600; // Längeren Schlaf teilen: nach 90 % aufw
 const unsigned long MENU_WINDOW_MS  = 3000;   // gleichzeitig Upload-Fenster für USB
 const unsigned long MENU_TIMEOUT_MS = 15000;  // ohne Tastendruck zurück in den Normalbetrieb
 const unsigned long LONG_PRESS_MS   = 1000;   // lang drücken = Modus starten
+const unsigned long WEB_TIMEOUT_MS  = 5UL * 60 * 1000;  // Einstellungsseite: so lange ohne Aufruf online
 const int TRIAL_DELAY_SEC = WAKE_MARGIN_SEC + 30;  // Probelauf: Sonnenaufgang startet so viel später
 
 // ==========================================
@@ -46,13 +50,64 @@ const int TRIAL_DELAY_SEC = WAKE_MARGIN_SEC + 30;  // Probelauf: Sonnenaufgang s
 RTC_DATA_ATTR time_t rtcHandledSunrise = 0;   // Start des zuletzt gespielten/übersprungenen Sonnenaufgangs
 RTC_DATA_ATTR time_t rtcTrialStart = 0;       // Probelauf aus dem Testmenü, 0 = keiner
 
+// Vor der ersten Funktion, weil die Arduino-IDE dort die Funktionsprototypen einfügt
+enum TimeSource { TIME_NONE, TIME_RTC, TIME_NTP };
+enum ButtonEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
+enum MenuResult { MENU_NORMAL, MENU_TRIAL };
+enum WebAction { WEB_NONE, WEB_LED_TEST, WEB_PREVIEW, WEB_DONE };
+
+// ==========================================
+// EINSTELLUNGEN (dauerhaft im Flash, übersteht Reset und Neu-Flashen)
+// ==========================================
+struct Settings {
+  int alarmHour;
+  int alarmMinute;
+  bool enabled;          // Wecker an/aus
+  int sunriseMinutes;
+  int daylightMinutes;
+  int maxBrightness;
+  time_t skipStart;      // dieser eine Sonnenaufgang fällt aus ("nächsten Wecker aussetzen"), 0 = keiner
+} cfg;
+
+Preferences prefs;
+
+void loadSettings() {
+  prefs.begin("wecker", true);
+  cfg.alarmHour       = prefs.getInt("hour", DEFAULT_ALARM_HOUR);
+  cfg.alarmMinute     = prefs.getInt("min", DEFAULT_ALARM_MINUTE);
+  cfg.enabled         = prefs.getBool("on", true);
+  cfg.sunriseMinutes  = prefs.getInt("rise", DEFAULT_SUNRISE_MINUTES);
+  cfg.daylightMinutes = prefs.getInt("day", DEFAULT_DAYLIGHT_MINUTES);
+  cfg.maxBrightness   = prefs.getInt("bright", DEFAULT_MAX_BRIGHTNESS);
+  cfg.skipStart       = (time_t)prefs.getLong64("skip", 0);
+  prefs.end();
+}
+
+void saveSettings() {
+  prefs.begin("wecker", false);
+  prefs.putInt("hour", cfg.alarmHour);
+  prefs.putInt("min", cfg.alarmMinute);
+  prefs.putBool("on", cfg.enabled);
+  prefs.putInt("rise", cfg.sunriseMinutes);
+  prefs.putInt("day", cfg.daylightMinutes);
+  prefs.putInt("bright", cfg.maxBrightness);
+  prefs.putLong64("skip", (int64_t)cfg.skipStart);
+  prefs.end();
+  Serial.printf("[CFG] Gespeichert: %02d:%02d, %s, Sonnenaufgang %d min, Licht danach %d min, Helligkeit %d\n",
+                cfg.alarmHour, cfg.alarmMinute, cfg.enabled ? "an" : "aus",
+                cfg.sunriseMinutes, cfg.daylightMinutes, cfg.maxBrightness);
+}
+
+// Zu spät aufgewacht: bis zum Ende des Sonnenaufgangs wird noch passend eingestiegen
+int lateGraceSec() {
+  return cfg.sunriseMinutes * 60;
+}
+
 // ==========================================
 // INITIALISIERUNG
 // ==========================================
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-
-enum TimeSource { TIME_NONE, TIME_RTC, TIME_NTP };
-enum ButtonEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
+WebServer server(80);
 
 volatile bool ntpSynced = false;
 
@@ -65,11 +120,11 @@ void onNtpSync(struct timeval *tv) {
 // ==========================================
 
 // Farbe für eine Helligkeit level = 0..1 (wahrgenommene Helligkeit),
-// gammakorrigiert und auf MAX_BRIGHTNESS begrenzt. Kein setBrightness(),
+// gammakorrigiert und auf die eingestellte Maximalhelligkeit begrenzt. Kein setBrightness(),
 // da das bei kleinen Werten Farbinformation verliert.
 uint32_t scaledColor(uint8_t r, uint8_t g, uint8_t b, float level) {
   level = constrain(level, 0.0f, 1.0f);
-  float scale = powf(level, 2.2f) * MAX_BRIGHTNESS / 255.0f;
+  float scale = powf(level, 2.2f) * cfg.maxBrightness / 255.0f;
   uint8_t rr = (uint8_t)lroundf(r * scale);
   uint8_t gg = (uint8_t)lroundf(g * scale);
   uint8_t bb = (uint8_t)lroundf(b * scale);
@@ -186,7 +241,7 @@ bool waitOrAbort(unsigned long ms) {
 }
 
 // ==========================================
-// ZEIT
+// ZEIT & WLAN
 // ==========================================
 
 // Systemzeit gilt als gültig, wenn sie nach 2024 liegt (nach Stromausfall startet sie bei 1970)
@@ -196,9 +251,10 @@ bool systemTimeValid() {
 
 // showProgress: Die Ringe füllen sich grün, während verbunden wird
 // (bis 6 LEDs beim WLAN-Verbinden, 7 = WLAN verbunden, 8 = Uhrzeit per NTP da).
-bool syncTimeWithWiFi(bool showProgress) {
+bool connectWiFi(bool showProgress) {
   Serial.printf("[WIFI] Verbinde mit %s...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int timeout = 0;
@@ -209,12 +265,28 @@ bool syncTimeWithWiFi(bool showProgress) {
     timeout++;
   }
 
+  bool ok = WiFi.status() == WL_CONNECTED;
+  if (ok && showProgress) showRings(7, 0, 255, 0, 0.5f);
+  return ok;
+}
+
+void wifiOff() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+}
+
+// NTP-Abfrage starten. Das Ergebnis meldet onNtpSync().
+void startNtp() {
+  ntpSynced = false;
+  sntp_set_time_sync_notification_cb(onNtpSync);
+  configTzTime(TIME_ZONE, NTP_SERVER);
+}
+
+bool syncTimeWithWiFi(bool showProgress) {
   bool ok = false;
-  if (WiFi.status() == WL_CONNECTED) {
+  if (connectWiFi(showProgress)) {
     Serial.println("\n[NTP] Hole Uhrzeit...");
-    if (showProgress) showRings(7, 0, 255, 0, 0.5f);
-    sntp_set_time_sync_notification_cb(onNtpSync);
-    configTzTime(TIME_ZONE, NTP_SERVER);
+    startNtp();
 
     // Auf die echte NTP-Antwort warten. getLocalTime() reicht nicht: Die Systemzeit
     // läuft im Deep Sleep weiter und ist deshalb schon vor dem Sync "gültig".
@@ -226,8 +298,7 @@ bool syncTimeWithWiFi(bool showProgress) {
     ok = ntpSynced;
   }
 
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
+  wifiOff();
 
   if (showProgress && ok) {
     showRings(LEDS_PER_RING, 0, 255, 0, 0.5f);   // Ringe voll grün: alles verbunden
@@ -238,10 +309,6 @@ bool syncTimeWithWiFi(bool showProgress) {
 }
 
 TimeSource getValidTime(bool showProgress) {
-  // Zeitzone immer setzen, auch wenn WLAN ausfällt, sonst rechnet localtime in UTC
-  setenv("TZ", TIME_ZONE, 1);
-  tzset();
-
   if (syncTimeWithWiFi(showProgress)) {
     return TIME_NTP;
   }
@@ -262,13 +329,13 @@ void printTime(const char *label, time_t t) {
                 tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
-// Erster Sonnenaufgangs-Start (Weckzeit minus SUNRISE_MINUTES) zum Zeitpunkt t oder danach.
+// Erster Sonnenaufgangs-Start (Weckzeit minus Sonnenaufgangsdauer) zum Zeitpunkt t oder danach.
 // mktime() normalisiert Tages-/Monatsüberläufe und Sommerzeit (tm_isdst = -1).
 time_t sunriseStartAtOrAfter(time_t t) {
   struct tm tm;
   localtime_r(&t, &tm);
-  tm.tm_hour = ALARM_HOUR;
-  tm.tm_min = ALARM_MINUTE - SUNRISE_MINUTES;
+  tm.tm_hour = cfg.alarmHour;
+  tm.tm_min = cfg.alarmMinute - cfg.sunriseMinutes;
   tm.tm_sec = 0;
   tm.tm_isdst = -1;
   time_t start = mktime(&tm);
@@ -280,10 +347,18 @@ time_t sunriseStartAtOrAfter(time_t t) {
   return start;
 }
 
-// Wie sunriseStartAtOrAfter, berücksichtigt aber einen anstehenden Probelauf
-time_t nextSunriseStart(time_t t) {
+// Nächster Sonnenaufgang, der wirklich stattfindet: 0 = Wecker aus, ausgesetzter Tag wird übersprungen
+time_t nextAlarmStart(time_t t) {
+  if (!cfg.enabled) return 0;
   time_t start = sunriseStartAtOrAfter(t);
-  if (rtcTrialStart >= t && rtcTrialStart < start) {
+  if (start == cfg.skipStart) start = sunriseStartAtOrAfter(start + 1);
+  return start;
+}
+
+// Wie nextAlarmStart, berücksichtigt aber einen anstehenden Probelauf
+time_t nextSunriseStart(time_t t) {
+  time_t start = nextAlarmStart(t);
+  if (rtcTrialStart >= t && (start == 0 || rtcTrialStart < start)) {
     start = rtcTrialStart;
   }
   return start;
@@ -293,10 +368,15 @@ time_t nextSunriseStart(time_t t) {
 // DEEP SLEEP
 // ==========================================
 
+// sleepSeconds = 0: ohne Timer schlafen, nur RESET weckt wieder (Wecker aus)
 void goToDeepSleep(uint64_t sleepSeconds) {
   Serial.println("==========================================");
-  Serial.printf("[SLEEP] Gehe fuer %llu Sekunden (%.1f Std) in Deep Sleep...\n",
-                sleepSeconds, sleepSeconds / 3600.0f);
+  if (sleepSeconds > 0) {
+    Serial.printf("[SLEEP] Gehe fuer %llu Sekunden (%.1f Std) in Deep Sleep...\n",
+                  sleepSeconds, sleepSeconds / 3600.0f);
+  } else {
+    Serial.println("[SLEEP] Wecker aus: Deep Sleep bis zum naechsten RESET.");
+  }
   Serial.println("==========================================\n");
   Serial.flush();
 
@@ -310,7 +390,9 @@ void goToDeepSleep(uint64_t sleepSeconds) {
   }
 
   // Aufwachen per Timer
-  esp_sleep_enable_timer_wakeup(sleepSeconds * 1000000ULL);
+  if (sleepSeconds > 0) {
+    esp_sleep_enable_timer_wakeup(sleepSeconds * 1000000ULL);
+  }
 
   // Aufwachen per Taste (LOW). Klappt auf dem ESP32-C3 nur an GPIO 0-5, an GPIO 9
   // meldet die IDF sonst "gpio 9 is an invalid deep sleep wakeup IO".
@@ -323,13 +405,17 @@ void goToDeepSleep(uint64_t sleepSeconds) {
 
 void goToDeepSleepUntilNextSunrise() {
   time_t now = time(nullptr);
-  time_t wakeAt = nextSunriseStart(now + WAKE_MARGIN_SEC + 1) - WAKE_MARGIN_SEC;
-  printTime("[SLEEP] Naechster Sonnenaufgang ab", wakeAt + WAKE_MARGIN_SEC);
+  time_t start = nextSunriseStart(now + WAKE_MARGIN_SEC + 1);
+  if (start == 0) {
+    goToDeepSleep(0);
+  }
+  time_t wakeAt = start - WAKE_MARGIN_SEC;
+  printTime("[SLEEP] Naechster Sonnenaufgang ab", start);
 
   uint64_t sleepSeconds = wakeAt > now ? wakeAt - now : 1;
   if (sleepSeconds > DRIFT_CHECK_MIN_SEC) {
     // Zwischenstopp: Selbst bei 10 % Drift wacht der Chip so noch vor dem Sonnenaufgang auf,
-    // holt die Uhrzeit neu und schläft den kurzen Rest dann genau.
+    // holt die Uhrzeit neu und schläft den kurzen Rest dann genau. Die LEDs bleiben dabei aus.
     sleepSeconds = sleepSeconds * 9 / 10;
     Serial.println("[SLEEP] Zwischenstopp zum Nachstellen der Uhr eingeplant.");
   }
@@ -342,11 +428,12 @@ void goToDeepSleepUntilNextSunrise() {
 
 // Spielt den Sonnenaufgang ab. startOffsetMs > 0, wenn das Gerät zu spät aufgewacht ist:
 // Dann wird an der passenden Stelle eingestiegen. fast = Zeitraffer (1 s = 1 min).
+// Ein Tastendruck beendet den Wecker jederzeit.
 void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
   Serial.printf("\n[ALARM] >>> SONNENAUFGANG GESTARTET%s <<<\n", fast ? " (Zeitraffer)" : "");
   unsigned long startMillis = millis() - startOffsetMs;
   int currentPhase = -1;
-  const float S = SUNRISE_MINUTES;
+  const float S = cfg.sunriseMinutes;
 
   ledPower(true);
 
@@ -381,7 +468,7 @@ void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
       float progress = (elapsedMinutes - S * 5.0f / 6.0f) / (S / 6.0f);
       r = 255 - (uint8_t)(progress * 30); g = 180 + (uint8_t)(progress * 75); b = 100 + (uint8_t)(progress * 155);
     }
-    else if (elapsedMinutes < S + DAYLIGHT_MINUTES) {
+    else if (elapsedMinutes < S + cfg.daylightMinutes) {
       phase = 4;  // Weckzeit erreicht: Weiß pulsierend
       float pulse = (sinf(millis() / 400.0f) + 1.0f) / 2.0f;
       r = 255; g = 255; b = 255;
@@ -409,12 +496,18 @@ void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
 }
 
 // ==========================================
-// STATUS & TESTMENÜ
+// STATUS
 // ==========================================
 
+// true, wenn morgen früh kein Wecker klingelt (Wecker aus oder nächster Termin ausgesetzt)
+bool noAlarmNext(time_t now) {
+  return !cfg.enabled || sunriseStartAtOrAfter(now) == cfg.skipStart;
+}
+
 // Anzeige nach jedem Reset, direkt nach dem grünen Füllen beim WLAN-Verbinden:
-//   gelb  = kein WLAN, interne Uhr läuft     rot = keine Uhrzeit, Wecker geht nicht
-//   dann  orange = volle Stunden bis zur Weckzeit (1 LED = 1 h, erst Ring 1, dann Ring 2)
+//   gelb  = kein WLAN, interne Uhr läuft     rot blinkend = keine Uhrzeit, Wecker geht nicht
+//   rot leuchtend = Wecker aus bzw. nächster Wecker ausgesetzt
+//   sonst orange = volle Stunden bis zur Weckzeit (1 LED = 1 h, erst Ring 1, dann Ring 2)
 //   dann  blau   = restliche Minuten in 10-Minuten-Schritten (auf beiden Ringen gleich)
 void showStatus(TimeSource source) {
   if (esp_reset_reason() == ESP_RST_BROWNOUT) {
@@ -434,7 +527,17 @@ void showStatus(TimeSource source) {
   }
 
   time_t now = time(nullptr);
-  time_t alarm = sunriseStartAtOrAfter(now) + SUNRISE_MINUTES * 60;
+  if (noAlarmNext(now)) {
+    Serial.println(cfg.enabled ? "[STATUS] Naechster Wecker ausgesetzt." : "[STATUS] Wecker ist aus.");
+    clearLEDs();
+    delay(300);
+    showRings(LEDS_PER_RING, 255, 0, 0, 0.5f);   // rot leuchtend: morgen kein Wecker
+    delay(3000);
+    clearLEDs();
+    return;
+  }
+
+  time_t alarm = sunriseStartAtOrAfter(now) + cfg.sunriseMinutes * 60;
   long remaining = (long)(alarm - now);
   int hours = remaining / 3600;
   int tenMinutes = (remaining % 3600) / 600;
@@ -452,6 +555,167 @@ void showStatus(TimeSource source) {
   delay(3000);
   clearLEDs();
 }
+
+// ==========================================
+// EINSTELLUNGSSEITE (Menü-Modus 4)
+// ==========================================
+
+WebAction webAction = WEB_NONE;
+unsigned long webLastRequest = 0;
+
+String twoDigits(int v) {
+  return v < 10 ? "0" + String(v) : String(v);
+}
+
+String formatDateTime(time_t t) {
+  static const char *WEEKDAYS[] = { "So", "Mo", "Di", "Mi", "Do", "Fr", "Sa" };
+  struct tm tm;
+  localtime_r(&t, &tm);
+  return String(WEEKDAYS[tm.tm_wday]) + " " + twoDigits(tm.tm_hour) + ":" + twoDigits(tm.tm_min);
+}
+
+String settingsPage(const String &message) {
+  time_t now = time(nullptr);
+  bool timeOk = systemTimeValid();
+
+  String status;
+  if (!timeOk) {
+    status = "Uhrzeit wird noch geholt, Seite gleich neu laden.";
+  } else if (!cfg.enabled) {
+    status = "Jetzt: " + formatDateTime(now) + "<br><b>Wecker ist aus.</b>";
+  } else {
+    time_t start = nextAlarmStart(now);
+    status = "Jetzt: " + formatDateTime(now) +
+             "<br>N&auml;chster Wecker: <b>" + formatDateTime(start + cfg.sunriseMinutes * 60) + "</b>" +
+             " (Sonnenaufgang ab " + formatDateTime(start).substring(3) + ")";
+    if (sunriseStartAtOrAfter(now) == cfg.skipStart) status += "<br>Der Termin davor ist ausgesetzt.";
+  }
+  bool skipChecked = timeOk && sunriseStartAtOrAfter(now) == cfg.skipStart;
+
+  String h;
+  h.reserve(4000);
+  h += F("<!doctype html><html lang='de'><head><meta charset='utf-8'>"
+         "<meta name='viewport' content='width=device-width,initial-scale=1'><title>Lichtwecker</title><style>"
+         ":root{color-scheme:light dark;--bg:#fff;--fg:#1d1d1f;--card:#f2f2f5;--acc:#e8702a}"
+         "@media(prefers-color-scheme:dark){:root{--bg:#111;--fg:#eee;--card:#222}}"
+         "body{font:17px -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0 auto;max-width:480px;padding:16px}"
+         "h1{font-size:24px;margin:8px 0 16px}.card{background:var(--card);border-radius:14px;padding:14px 16px;margin-bottom:14px}"
+         "label{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0}"
+         "input[type=time],input[type=number]{font-size:17px;padding:6px 8px;border-radius:8px;border:1px solid #888;background:var(--bg);color:var(--fg);width:7em}"
+         "input[type=checkbox]{width:22px;height:22px}"
+         "button{width:100%;font-size:17px;padding:12px;border:0;border-radius:12px;margin-top:8px;background:var(--card);color:var(--fg)}"
+         "button.main{background:var(--acc);color:#fff;font-weight:600}.msg{background:#2a7;color:#fff;padding:10px 14px;border-radius:12px}"
+         "small{opacity:.7}</style></head><body><h1>Lichtwecker</h1>");
+  if (message.length() > 0) h += "<p class='msg'>" + message + "</p>";
+  h += "<div class='card'>" + status + "</div>";
+
+  h += F("<form method='post' action='/save'><div class='card'>");
+  h += "<label>Weckzeit <input type='time' name='t' required value='" +
+       twoDigits(cfg.alarmHour) + ":" + twoDigits(cfg.alarmMinute) + "'></label>";
+  h += String("<label>Wecker an <input type='checkbox' name='on'") + (cfg.enabled ? " checked" : "") + "></label>";
+  h += String("<label>N&auml;chsten Wecker aussetzen <input type='checkbox' name='skip'") + (skipChecked ? " checked" : "") + "></label>";
+  h += F("</div><div class='card'>");
+  h += "<label>Sonnenaufgang (min) <input type='number' name='rise' min='5' max='60' value='" + String(cfg.sunriseMinutes) + "'></label>";
+  h += "<label>Licht nach Weckzeit (min) <input type='number' name='day' min='0' max='60' value='" + String(cfg.daylightMinutes) + "'></label>";
+  h += "<label>Max. Helligkeit <input type='number' name='bright' min='10' max='150' value='" + String(cfg.maxBrightness) + "'></label>";
+  h += F("<small>Helligkeit 10&ndash;150, Standard 76 (&asymp; 30 %). Heller = mehr Strom und W&auml;rme am Auge.</small>");
+  h += F("</div><button class='main' type='submit'>Speichern</button></form>");
+
+  h += F("<form method='post' action='/action'><div class='card'>"
+         "<button name='a' value='preview'>Sonnenaufgang-Vorschau (1 min)</button>"
+         "<button name='a' value='led'>LED-Test</button>"
+         "<button name='a' value='done'>Fertig (Maske geht schlafen)</button>"
+         "</div></form><small>Die Seite ist bis zu 5 Minuten nach dem letzten Aufruf erreichbar. "
+         "BOOT-Taste an der Maske beendet sie sofort.</small></body></html>");
+  return h;
+}
+
+void handleRoot() {
+  webLastRequest = millis();
+  server.send(200, "text/html; charset=utf-8", settingsPage(server.hasArg("saved") ? "Gespeichert." : ""));
+}
+
+void handleSave() {
+  webLastRequest = millis();
+  int hh, mm;
+  if (sscanf(server.arg("t").c_str(), "%d:%d", &hh, &mm) == 2 && hh >= 0 && hh < 24 && mm >= 0 && mm < 60) {
+    cfg.alarmHour = hh;
+    cfg.alarmMinute = mm;
+  }
+  cfg.enabled = server.hasArg("on");
+  if (server.hasArg("rise"))   cfg.sunriseMinutes  = constrain(server.arg("rise").toInt(), 5, 60);
+  if (server.hasArg("day"))    cfg.daylightMinutes = constrain(server.arg("day").toInt(), 0, 60);
+  if (server.hasArg("bright")) cfg.maxBrightness   = constrain(server.arg("bright").toInt(), 10, 150);
+  // Aussetzen bezieht sich auf den nächsten Termin mit der gerade gespeicherten Weckzeit
+  cfg.skipStart = (server.hasArg("skip") && systemTimeValid()) ? sunriseStartAtOrAfter(time(nullptr)) : 0;
+  saveSettings();
+  blink(0, 255, 0, 1);   // Bestätigung an der Maske
+
+  server.sendHeader("Location", "/?saved=1");
+  server.send(303);
+}
+
+void handleAction() {
+  webLastRequest = millis();
+  String a = server.arg("a");
+  String msg;
+  if (a == "led")          { webAction = WEB_LED_TEST; msg = "LED-Test l&auml;uft (ca. 16 s)."; }
+  else if (a == "preview") { webAction = WEB_PREVIEW;  msg = "Vorschau l&auml;uft (ca. 1 min). BOOT-Taste bricht ab."; }
+  else if (a == "done")    { webAction = WEB_DONE;     msg = "Fertig. Die Maske zeigt den Status und schl&auml;ft dann."; }
+  server.send(200, "text/html; charset=utf-8",
+              "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+              "<body style='font:17px -apple-system,system-ui,sans-serif;padding:16px'><p>" + msg +
+              "</p><p><a href='/'>Zur&uuml;ck zu den Einstellungen</a></p></body>");
+}
+
+// Ringe "atmen" blau, solange die Seite erreichbar ist.
+// Ende: "Fertig" auf der Seite, BOOT-Taste oder 5 min ohne Aufruf.
+void runSettingsServer() {
+  Serial.println("[WEB] Einstellungen: verbinde WLAN...");
+  if (!connectWiFi(true)) {
+    Serial.println("\n[WEB] Kein WLAN, Einstellungen nicht moeglich.");
+    wifiOff();
+    blink(255, 0, 0, 3);
+    return;
+  }
+  startNtp();   // Uhrzeit für die Seite, läuft im Hintergrund
+
+  MDNS.begin(HOSTNAME);
+  MDNS.addService("http", "tcp", 80);
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.on("/action", HTTP_POST, handleAction);
+  server.begin();
+  Serial.printf("\n[WEB] Online: http://%s.local  bzw. http://%s\n", HOSTNAME, WiFi.localIP().toString().c_str());
+
+  webLastRequest = millis();
+  webAction = WEB_NONE;
+  while (millis() - webLastRequest < WEB_TIMEOUT_MS) {
+    server.handleClient();
+
+    if (webAction == WEB_DONE) break;
+    if (webAction == WEB_LED_TEST) { webAction = WEB_NONE; runLedTest(); webLastRequest = millis(); }
+    if (webAction == WEB_PREVIEW)  { webAction = WEB_NONE; runSunriseAlarm(0, true); webLastRequest = millis(); }
+
+    if (buttonPressed()) {
+      waitForRelease();
+      break;
+    }
+
+    showRings(LEDS_PER_RING, 0, 80, 255, 0.3f + 0.15f * sinf(millis() / 600.0f));
+    delay(5);
+  }
+
+  server.stop();
+  MDNS.end();
+  wifiOff();
+  clearLEDs();
+  Serial.println("[WEB] Einstellungen beendet.");
+}
+
+// ==========================================
+// TESTMENÜ
+// ==========================================
 
 // Modus 1: alle Farben, jede LED einzeln (tote LEDs / Unterbrechungen), dann Volllast.
 // Startet das Board bei Volllast neu, reicht die Stromversorgung nicht.
@@ -484,12 +748,21 @@ void runLedTest() {
   Serial.println("[TEST] LED-Test fertig.");
 }
 
+// Modus 5: Wecker an/aus umschalten, neuer Zustand 2 s lang grün (an) oder rot (aus)
+void toggleAlarmEnabled() {
+  cfg.enabled = !cfg.enabled;
+  saveSettings();
+  if (cfg.enabled) showRings(LEDS_PER_RING, 0, 255, 0, 0.5f);
+  else             showRings(LEDS_PER_RING, 255, 0, 0, 0.5f);
+  delay(2000);
+  clearLEDs();
+}
+
 // Testmenü: Modus = Anzahl hellblauer LEDs. Kurz drücken = nächster Modus, lang = starten.
-// Rückgabe true = Probelauf gewählt.
-bool runTestMenu() {
-  const int MODE_COUNT = 3;
+MenuResult runTestMenu() {
+  const int MODE_COUNT = 5;
   int mode = 1;
-  Serial.println("[MENU] Testmenue: 1 = LED-Test, 2 = Zeitraffer, 3 = Probelauf");
+  Serial.println("[MENU] 1 = LED-Test, 2 = Zeitraffer, 3 = Probelauf, 4 = Einstellungen (WLAN), 5 = Wecker an/aus");
   blink(0, 180, 255, 2);   // Menü erkannt
 
   while (true) {
@@ -500,16 +773,20 @@ bool runTestMenu() {
     if (ev == BTN_NONE) {
       clearLEDs();
       Serial.println("[MENU] Timeout, zurueck in den Normalbetrieb.");
-      return false;
+      return MENU_NORMAL;
     }
     if (ev == BTN_SHORT) {
       mode = mode % MODE_COUNT + 1;
       continue;
     }
 
-    if (mode == 1) runLedTest();
-    else if (mode == 2) runSunriseAlarm(0, true);
-    else return true;
+    switch (mode) {
+      case 1: runLedTest(); break;
+      case 2: runSunriseAlarm(0, true); break;
+      case 3: return MENU_TRIAL;
+      case 4: runSettingsServer(); return MENU_NORMAL;
+      case 5: toggleAlarmEnabled(); break;
+    }
   }
 }
 
@@ -524,6 +801,11 @@ void setup() {
   setCpuFrequencyMhz(80);
   Serial.begin(115200);
 
+  // Zeitzone immer setzen, auch wenn WLAN ausfällt, sonst rechnet localtime in UTC
+  setenv("TZ", TIME_ZONE, 1);
+  tzset();
+  loadSettings();
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   ledPower(true);
@@ -533,6 +815,7 @@ void setup() {
   // Nach Reset/Einschalten: 3 s Fenster für USB-Uploads und fürs Testmenü.
   // Die erste LED leuchtet blau, solange man BOOT drücken kann.
   // (BOOT nicht schon beim Reset halten, sonst startet der Chip im Download-Modus.)
+  // Beim nächtlichen Aufwachen (Timer) bleiben alle LEDs aus.
   bool menuRequested = false;
   if (afterReset) {
     showCount(1, 0, 0, 255, 0.5f);
@@ -554,7 +837,7 @@ void setup() {
     Serial.println("[WAKEUP] Durch Manuelle Taste aufgeweckt!");
   }
 
-  bool trialRequested = menuRequested && runTestMenu();
+  bool trialRequested = menuRequested && runTestMenu() == MENU_TRIAL;
 
   TimeSource source = getValidTime(afterReset);
   if (afterReset) {
@@ -575,12 +858,24 @@ void setup() {
   }
 
   // Anstehender Sonnenaufgang: Probelauf oder regulär (auch wenn er vor höchstens
-  // LATE_GRACE_SEC hätte beginnen sollen)
-  bool trial = rtcTrialStart != 0 && now <= rtcTrialStart + LATE_GRACE_SEC;
+  // lateGraceSec() hätte beginnen sollen). 0 = keiner.
+  bool trial = rtcTrialStart != 0 && now <= rtcTrialStart + lateGraceSec();
   if (!trial) rtcTrialStart = 0;
-  time_t start = trial ? rtcTrialStart : sunriseStartAtOrAfter(now - LATE_GRACE_SEC);
+  time_t start = 0;
+  if (trial) start = rtcTrialStart;
+  else if (cfg.enabled) start = sunriseStartAtOrAfter(now - lateGraceSec());
 
-  if (start == rtcHandledSunrise) {
+  if (start == 0) {
+    Serial.println("[ALARM] Wecker ist aus.");
+  }
+  else if (!trial && start == cfg.skipStart) {
+    Serial.println("[ALARM] Dieser Wecker ist ausgesetzt.");
+    if (start - now <= WAKE_MARGIN_SEC) {
+      cfg.skipStart = 0;   // erledigt, ab morgen wieder normal
+      saveSettings();
+    }
+  }
+  else if (start == rtcHandledSunrise) {
     Serial.println("[ALARM] Heutiger Wecker wurde schon gespielt oder beendet.");
   }
   else if (start - now <= WAKE_MARGIN_SEC) {
