@@ -15,7 +15,8 @@ arduino-cli compile --fqbn $FQBN lichtwecker
 # Port suchen, bis zu 20 s warten (Maske wacht nach RESET kurz auf)
 PORT=""
 for i in {1..20}; do
-  PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1 || true)
+  ports=(/dev/cu.usbmodem*(N) /dev/cu.usbserial*(N))
+  PORT=${ports[1]:-}
   [[ -n "$PORT" ]] && break
   (( i == 1 )) && echo "Warte auf die Maske ... jetzt RESET an der Maske drücken."
   sleep 1
