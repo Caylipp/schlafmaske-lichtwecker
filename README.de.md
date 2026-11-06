@@ -123,7 +123,7 @@ arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
 
 ### Konfiguration
 
-**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer, Helligkeit und bevorzugtes WLAN** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 4, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen.
+**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer, Helligkeit und bevorzugtes WLAN** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 1, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen.
 
 Oben in `lichtwecker.ino` stehen nur noch Standardwerte und Hardware-Konstanten:
 
@@ -156,14 +156,14 @@ Kurzfassung:
   5. Wecker an/aus
   6. WLAN wechseln
 
-**Empfohlen vor der ersten Nacht:** Modus 1 und Modus 3 **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
+**Empfohlen vor der ersten Nacht:** Modus 2 und Modus 4 **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
 
 ## Drift-Test (läuft)
 
 **Seit 29.09.2026** ist der Nacht-Abgleich (`DRIFT_CHECK_ENABLED = false`) abgeschaltet. So lässt sich messen, wie stark die interne Uhr des XIAO im Deep Sleep wirklich abweicht.
 
 - **Messung:** Bei jedem NTP-Abgleich vergleicht `recordClockDrift()` die interne Uhr mit der NTP-Zeit, auf Millisekunden genau. War der letzte Abgleich mindestens 30 min her, wird das Ergebnis im Flash gespeichert (Namespace `drift`, Ringpuffer mit 30 Einträgen). Die wichtige Messung ist die morgens: Abend-Check per RESET → Nacht → Aufwachen vor dem Sonnenaufgang.
-- **Auslesen:** Einstellungsseite (Menü-Modus 4) → „Uhr-Abweichung (Test)“, oder die serielle Ausgabe nach RESET (`[DRIFT] …`).
+- **Auslesen:** Einstellungsseite (Menü-Modus 1) → „Uhr-Abweichung (Test)“, oder die serielle Ausgabe nach RESET (`[DRIFT] …`).
 - **Auswertung:** Maßgeblich ist die Spalte „pro 8 h“. Plus heißt: Die Uhr ging nach, der Wecker kam zu spät.
   - Unter ~±60 s pro Nacht: Der Nacht-Abgleich ist unnötig und kostet nur Akku.
   - Deutlich mehr, oder mehr als die Kulanz (Sonnenaufgangsdauer): `DRIFT_CHECK_ENABLED = true` setzen.

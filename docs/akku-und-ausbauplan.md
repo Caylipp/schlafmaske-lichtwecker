@@ -118,7 +118,7 @@ D3 (GPIO 5) ─[330 Ω]─ B (Basis)
 ### Empfehlung: Einstellungsseite im Heim-WLAN (**umgesetzt**, siehe [BEDIENUNGSANLEITUNG.md](../BEDIENUNGSANLEITUNG.md))
 
 ```
-RESET → Menü → Modus 4 „Einstellungen“ (lang drücken)
+RESET → Menü → Modus 1 „Einstellungen“ (lang drücken)
       → Ringe „atmen“ langsam blau = Board ist online (max. 5 min)
       → iPhone: WLAN „Lichtwecker“ wählen, Seite öffnet sich von selbst
         (oder im Heim-WLAN http://lichtwecker.local)
@@ -152,7 +152,7 @@ Das funktioniert auch ohne WLAN, ist aber umständlicher. Sinnvoll als Notlösun
 ### Umsetzungsschritte
 
 1. Einstellungen aus den Konstanten in `Preferences` verschieben (Standardwerte bleiben im Code).
-2. Menü-Modus 4 mit Webserver, mDNS und einer einfachen HTML-Seite.
+2. Menü-Modus 1 mit Webserver, mDNS und einer einfachen HTML-Seite.
 3. „Morgen kein Wecker“ und Wochentagsprofile.
 4. Rückfallebene per Taste.
 
