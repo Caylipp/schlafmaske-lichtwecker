@@ -20,6 +20,7 @@ A sleep mask with built-in LEDs that simulates a **sunrise** before your alarm t
 - Sunrise in four phases (default alarm 08:00): red → orange (07:30), orange → peach (07:45), → white (07:55), pulsing white until 08:30. Brightness ramps up with gamma correction.
 - A button press during the alarm stops it; a press shortly before it starts skips today's alarm.
 - **Settings via phone**: alarm time, duration, brightness and Wi-Fi are changed on a small web page served by the ESP32 and stored in flash. No reflashing needed.
+- **Settings on the device**: the alarm time (00:00–16:50, 10-minute steps) can also be set with just the button and LEDs, no phone needed.
 
 ## Status
 

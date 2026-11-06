@@ -123,7 +123,7 @@ arduino-cli monitor -p /dev/cu.usbmodem* -c baudrate=115200
 
 ### Konfiguration
 
-**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer, Helligkeit und bevorzugtes WLAN** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 1, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen.
+**Weckzeit, Wecker an/aus, Sonnenaufgangsdauer, Lichtdauer, Helligkeit und bevorzugtes WLAN** stellt man ohne Neu-Flashen über die Einstellungsseite ein (Menü-Modus 1, [Bedienungsanleitung](BEDIENUNGSANLEITUNG.md#weckzeit-ändern-am-handy)). Gespeichert wird im Flash (`Preferences`, Namespace `wecker`). Das übersteht Reset, leeren Akku und neues Hochladen. Ohne Handy lässt sich die Weckzeit auch direkt an der Maske stellen (Menü-Modus 2, 00:00–16:50 in 10er-Schritten).
 
 Oben in `lichtwecker.ino` stehen nur noch Standardwerte und Hardware-Konstanten:
 
@@ -156,7 +156,7 @@ Kurzfassung:
   5. Wecker an/aus
   6. WLAN wechseln
 
-**Empfohlen vor der ersten Nacht:** Modus 2 und Modus 4 **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
+**Empfohlen vor der ersten Nacht:** Modus 3 (LED-Test) und Modus 5 (Probelauf) **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
 
 ## Drift-Test (läuft)
 
