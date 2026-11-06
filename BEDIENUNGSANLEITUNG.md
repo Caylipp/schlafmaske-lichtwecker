@@ -28,7 +28,7 @@ USB abziehen, **RESET** drücken und nichts weiter anfassen:
 | Ringe füllen sich **grün** | Verbindung zum WLAN wird aufgebaut |
 | Ringe **voll grün** | WLAN und Uhrzeit ok ✔ |
 | Ringe **voll gelb** | kein WLAN, die interne Uhr läuft trotzdem, der Wecker funktioniert |
-| **orange** LEDs | **Stunden** bis zum Wecken (1 LED = 1 Stunde, erst linker/erster Ring, dann der zweite) |
+| **orange** LEDs | **Stunden** bis zum Wecken (1 LED = 1 Stunde, beide Ringe zeigen dasselbe). Ab der 9. Stunde werden sie **rot** und zählen von vorn: 7 h = 7 orange, 9 h = 1 rote, 12 h = 4 rote |
 | **blaue** LEDs | dazu **Minuten** in 10er-Schritten (3 blaue = 30 min) |
 | Ringe **rot leuchtend** (3 s) | **morgen kein Wecker**: Wecker ist aus oder der nächste ist ausgesetzt |
 | 3× **rot blinkend** | ⚠ keine Uhrzeit, **der Wecker funktioniert nicht**. WLAN prüfen, RESET wiederholen |
@@ -57,10 +57,10 @@ Danach wird alles dunkel und die Maske schläft bis kurz vor dem Sonnenaufgang. 
 
 | Modus | Name | Was passiert |
 |---|---|---|
-| 1 | **LED-Test** | Rot, Grün, Blau, Weiß → jede LED einzeln → 10 s volle Helligkeit. Zeigt kaputte LEDs und ob der Akku die Last schafft |
-| 2 | **Vorschau** | Sonnenaufgang im Zeitraffer (1 Minute) |
-| 3 | **Probelauf** | Maske schläft wirklich ein und weckt dich nach ~3 Minuten mit einem Zeitraffer-Sonnenaufgang. Testet die komplette Kette wie nachts |
-| 4 | **Einstellungen (WLAN)** | Weckzeit usw. am Handy ändern, siehe unten |
+| 1 | **Einstellungen (WLAN)** | Weckzeit usw. am Handy ändern, siehe unten |
+| 2 | **LED-Test** | Rot, Grün, Blau, Weiß → jede LED einzeln → 10 s volle Helligkeit. Zeigt kaputte LEDs und ob der Akku die Last schafft |
+| 3 | **Vorschau** | Sonnenaufgang im Zeitraffer (1 Minute) |
+| 4 | **Probelauf** | Maske schläft wirklich ein und weckt dich nach ~3 Minuten mit einem Zeitraffer-Sonnenaufgang. Testet die komplette Kette wie nachts |
 | 5 | **Wecker an/aus** | schaltet um. Danach 2 s **grün = an**, **rot = aus** |
 | 6 | **WLAN wechseln** | wechselt das bevorzugte WLAN. Danach 2 s **1 grüne LED = WLAN 1**, **2 grüne = WLAN 2** |
 
@@ -69,7 +69,7 @@ BOOT während eines Tests bricht ihn ab.
 ## Weckzeit ändern (am Handy)
 
 1. **RESET**, dann **BOOT** (erste LED blau) → Menü.
-2. BOOT kurz drücken, bis **4 LEDs** hellblau leuchten, dann **BOOT lang**.
+2. BOOT kurz drücken, bis **1 LED** hellblau leuchtet (das ist gleich beim Öffnen so), dann **BOOT lang**.
 3. Die Ringe füllen sich grün, danach **„atmen“ sie blau**. Die Maske ist jetzt online.
 4. Am iPhone unter **Einstellungen → WLAN** das Netz **„Lichtwecker“** wählen. **Die Seite öffnet sich von selbst.**
    - Falls nicht: in Safari **http://192.168.4.1** öffnen.
@@ -107,7 +107,7 @@ Die Maske versucht immer zuerst das gewählte WLAN. Klappt das nicht, probiert s
 Die Maske hat keinen Uhrenquarz. Im Tiefschlaf kann ihre Uhr deshalb etwas vor- oder nachgehen. Um herauszufinden, wie viel, läuft gerade ein Test:
 - Der zusätzliche nächtliche Uhr-Abgleich ist **abgeschaltet**.
 - Morgens beim Aufwachen gleicht die Maske ihre Uhr per WLAN ab und **speichert, wie weit sie danebenlag**. Die Werte bleiben auch nach RESET erhalten, bis zu 30 Messungen.
-- **Ansehen:** Menü-Modus 4, auf der Einstellungsseite unter **„Uhr-Abweichung (Test)“**. „Plus“ heißt: Die Uhr ging nach, der Wecker kam also so viele Sekunden zu spät.
+- **Ansehen:** Menü-Modus 1, auf der Einstellungsseite unter **„Uhr-Abweichung (Test)“**. „Plus“ heißt: Die Uhr ging nach, der Wecker kam also so viele Sekunden zu spät.
 - Nach ein paar Nächten werten wir das gemeinsam aus. Ist die Abweichung klein (unter ~1 Minute pro Nacht), bleibt es so. Sonst wird der Nacht-Abgleich wieder eingeschaltet.
 
 Wichtig für eine saubere Messung: abends einmal **RESET** drücken (Abend-Check). Damit startet die Messung mit einer frisch gestellten Uhr.
@@ -129,7 +129,7 @@ Mit einem kleinen Umbau (ein Transistor aus dem Elegoo-Kit) würden 30 Minuten p
 |---|---|
 | Nach RESET 3× rot blinkend | Kein WLAN und keine gespeicherte Uhrzeit. In Reichweite des Schlafzimmer-WLANs sein und RESET wiederholen |
 | Ringe gelb statt grün | WLAN nicht erreicht. Der Wecker läuft trotzdem, sollte aber mindestens alle paar Tage mal grün zeigen |
-| Einstellungsseite lädt nicht | Am iPhone mit dem WLAN **„Lichtwecker“** verbinden und **http://192.168.4.1** öffnen. Atmen die Ringe noch blau? Sonst Menü → Modus 4 neu starten |
+| Einstellungsseite lädt nicht | Am iPhone mit dem WLAN **„Lichtwecker“** verbinden und **http://192.168.4.1** öffnen. Atmen die Ringe noch blau? Sonst Menü → Modus 1 neu starten |
 | Maske reagiert gar nicht | Akku leer, USB-C einstecken und RESET drücken |
 | Sonnenaufgang zu hell oder zu dunkel | Max. Helligkeit auf der Einstellungsseite anpassen |
 | Nach dem LED-Test blinkt es lila | Der Akku schafft volle Helligkeit nicht, zuerst laden |

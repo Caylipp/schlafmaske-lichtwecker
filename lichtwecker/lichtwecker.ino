@@ -636,7 +636,7 @@ bool noAlarmNext(time_t now) {
 // Anzeige nach jedem Reset, direkt nach dem grünen Füllen beim WLAN-Verbinden:
 //   gelb  = kein WLAN, interne Uhr läuft     rot blinkend = keine Uhrzeit, Wecker geht nicht
 //   rot leuchtend = Wecker aus bzw. nächster Wecker ausgesetzt
-//   sonst orange = volle Stunden bis zur Weckzeit (1 LED = 1 h, erst Ring 1, dann Ring 2)
+//   sonst orange = volle Stunden bis zur Weckzeit (1 LED = 1 h, auf beiden Ringen gleich, ab 9 h rot)
 //   dann  blau   = restliche Minuten in 10-Minuten-Schritten (auf beiden Ringen gleich)
 void showStatus(TimeSource source) {
   if (esp_reset_reason() == ESP_RST_BROWNOUT) {
@@ -676,7 +676,11 @@ void showStatus(TimeSource source) {
 
   clearLEDs();
   delay(300);
-  showCount(hours, 255, 100, 0, 0.6f);        // orange: Stunden
+  // Ein Ring fasst 8 LEDs: ab der 9. Stunde wechselt die Farbe auf rot und zählt von vorn
+  // (7 h = 7 orange, 9 h = 1 rot, 16 h = 8 rot, 17 h = 1 orange)
+  int hourLeds = hours == 0 ? 0 : (hours - 1) % LEDS_PER_RING + 1;
+  if (((hours - 1) / LEDS_PER_RING) % 2 == 0) showRings(hourLeds, 255, 100, 0, 0.6f);   // orange: Stunden
+  else                                         showRings(hourLeds, 255, 0, 0, 0.6f);     // rot: Stunden ab 9
   delay(4000);
   clearLEDs();
   delay(300);
@@ -686,7 +690,7 @@ void showStatus(TimeSource source) {
 }
 
 // ==========================================
-// EINSTELLUNGSSEITE (Menü-Modus 4)
+// EINSTELLUNGSSEITE (Menü-Modus 1)
 // ==========================================
 
 WebAction webAction = WEB_NONE;
@@ -920,7 +924,7 @@ void runSettingsServer() {
 // TESTMENÜ
 // ==========================================
 
-// Modus 1: alle Farben, jede LED einzeln (tote LEDs / Unterbrechungen), dann Volllast.
+// Modus 2: alle Farben, jede LED einzeln (tote LEDs / Unterbrechungen), dann Volllast.
 // Startet das Board bei Volllast neu, reicht die Stromversorgung nicht.
 void runLedTest() {
   Serial.println("[TEST] LED-Test: Farben");
@@ -975,7 +979,7 @@ void switchWifi() {
 MenuResult runTestMenu() {
   const int MODE_COUNT = 6;
   int mode = 1;
-  Serial.println("[MENU] 1 = LED-Test, 2 = Zeitraffer, 3 = Probelauf, 4 = Einstellungen, 5 = Wecker an/aus, 6 = WLAN wechseln");
+  Serial.println("[MENU] 1 = Einstellungen, 2 = LED-Test, 3 = Zeitraffer, 4 = Probelauf, 5 = Wecker an/aus, 6 = WLAN wechseln");
   blink(0, 180, 255, 2);   // Menü erkannt
 
   while (true) {
@@ -994,10 +998,10 @@ MenuResult runTestMenu() {
     }
 
     switch (mode) {
-      case 1: runLedTest(); break;
-      case 2: runSunriseAlarm(0, true); break;
-      case 3: return MENU_TRIAL;
-      case 4: runSettingsServer(); return MENU_NORMAL;
+      case 1: runSettingsServer(); return MENU_NORMAL;
+      case 2: runLedTest(); break;
+      case 3: runSunriseAlarm(0, true); break;
+      case 4: return MENU_TRIAL;
       case 5: toggleAlarmEnabled(); break;
       case 6: switchWifi(); break;
     }
