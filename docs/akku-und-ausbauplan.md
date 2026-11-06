@@ -143,9 +143,9 @@ Warum nicht Bluetooth? Safari auf dem iPhone kann kein Web Bluetooth. Man bräuc
 
 ### Rückfallebene: nur Taste + LEDs
 
-Menü-Modus „Weckzeit“:
-- Anzeige wie beim Status: orange = Stunde der Weckzeit, blau = 10-Minuten-Schritte.
-- Kurz drücken = +10 min, lang drücken = speichern.
+Umgesetzt als Menü-Modus 2 „Weckzeit am Gerät“ (Bedienung in der Bedienungsanleitung):
+- Erst Stunde 0–16 (1–8 orange, 9–16 rot von vorn), dann Minuten in 10er-Schritten (blau). Weiße LED = 0.
+- Kurz drücken = +1, lang drücken = übernehmen.
 
 Das funktioniert auch ohne WLAN, ist aber umständlicher. Sinnvoll als Notlösung.
 

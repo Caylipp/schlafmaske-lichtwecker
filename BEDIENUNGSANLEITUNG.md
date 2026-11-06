@@ -50,7 +50,7 @@ Danach wird alles dunkel und die Maske schläft bis kurz vor dem Sonnenaufgang. 
 
 **RESET** drücken, dann **BOOT drücken, solange die erste LED blau ist**. Nach 2× hellblauem Blinken bist du im Menü.
 
-- **Die Zahl der hellblauen LEDs** zeigt den Modus (1–6).
+- **Die Zahl der hellblauen LEDs** zeigt den Modus (1–7).
 - **BOOT kurz** = nächster Modus.
 - **BOOT lang** (1 s, bis alles weiß aufblitzt) = Modus starten.
 - 15 s nichts drücken = Menü verlassen, danach kommt der normale Abend-Check.
@@ -58,13 +58,35 @@ Danach wird alles dunkel und die Maske schläft bis kurz vor dem Sonnenaufgang. 
 | Modus | Name | Was passiert |
 |---|---|---|
 | 1 | **Einstellungen (WLAN)** | Weckzeit usw. am Handy ändern, siehe unten |
-| 2 | **LED-Test** | Rot, Grün, Blau, Weiß → jede LED einzeln → 10 s volle Helligkeit. Zeigt kaputte LEDs und ob der Akku die Last schafft |
-| 3 | **Vorschau** | Sonnenaufgang im Zeitraffer (1 Minute) |
-| 4 | **Probelauf** | Maske schläft wirklich ein und weckt dich nach ~3 Minuten mit einem Zeitraffer-Sonnenaufgang. Testet die komplette Kette wie nachts |
-| 5 | **Wecker an/aus** | schaltet um. Danach 2 s **grün = an**, **rot = aus** |
-| 6 | **WLAN wechseln** | wechselt das bevorzugte WLAN. Danach 2 s **1 grüne LED = WLAN 1**, **2 grüne = WLAN 2** |
+| 2 | **Weckzeit am Gerät** | Weckzeit nur mit der Taste stellen, ohne Handy, siehe unten |
+| 3 | **LED-Test** | Rot, Grün, Blau, Weiß → jede LED einzeln → 10 s volle Helligkeit. Zeigt kaputte LEDs und ob der Akku die Last schafft |
+| 4 | **Vorschau** | Sonnenaufgang im Zeitraffer (1 Minute) |
+| 5 | **Probelauf** | Maske schläft wirklich ein und weckt dich nach ~3 Minuten mit einem Zeitraffer-Sonnenaufgang. Testet die komplette Kette wie nachts |
+| 6 | **Wecker an/aus** | schaltet um. Danach 2 s **grün = an**, **rot = aus** |
+| 7 | **WLAN wechseln** | wechselt das bevorzugte WLAN. Danach 2 s **1 grüne LED = WLAN 1**, **2 grüne = WLAN 2** |
 
 BOOT während eines Tests bricht ihn ab.
+
+## Weckzeit ändern (an der Maske, ohne Handy)
+
+Für schnell zwischendurch. Geht auch ohne WLAN.
+
+1. **RESET**, dann **BOOT** (erste LED blau) → Menü.
+2. **BOOT kurz** → **2 LEDs** hellblau, dann **BOOT lang**.
+3. Einmal **orange** blinken = jetzt die **Stunde** einstellen.
+   - Angezeigt wird die eingestellte Stunde: **1–8 = so viele orange LEDs**, **9–16 = rot, wieder von vorn** (9 Uhr = 1 rote, 12 Uhr = 4 rote, 16 Uhr = 8 rote). **Eine weiße LED = 0 Uhr.**
+   - **BOOT kurz** = eine Stunde weiter (nach 16 kommt wieder 0).
+   - **BOOT lang** = Stunde übernehmen.
+4. Einmal **blau** blinken = jetzt die **Minuten** in 10er-Schritten.
+   - **Blaue LEDs × 10 min** (3 blaue = :30). **Eine weiße LED = :00.**
+   - **BOOT kurz** = +10 min (nach :50 kommt wieder :00).
+   - **BOOT lang** = speichern.
+5. **2× grün** = gespeichert. Danach zeigt die Maske die neue Zeit noch einmal (Stunden, dann Minuten) und dann den normalen Status.
+
+- Der Wecker wird dabei **automatisch eingeschaltet**, ein ausgesetzter Morgen wird wieder aktiv.
+- Gestartet wird mit der bisherigen Weckzeit, du musst also nur ändern, was anders sein soll.
+- 15 s nichts drücken = Abbruch, die alte Weckzeit bleibt.
+- Weckzeiten nach 16:xx und andere Minuten als 10er-Schritte gehen nur über das Handy.
 
 ## Weckzeit ändern (am Handy)
 
@@ -87,7 +109,7 @@ Auf der Seite:
 | Sonnenaufgang (min) | wie lange es vorher hell wird (5–60, Standard 30) |
 | Licht nach Weckzeit (min) | wie lange es danach weiß pulsiert (0–60, Standard 30) |
 | Max. Helligkeit | 10–150, Standard 76. Heller verbraucht mehr Strom und wird wärmer |
-| WLAN | welches der zwei hinterlegten WLANs zuerst benutzt wird (geht auch mit Menü-Modus 6) |
+| WLAN | welches der zwei hinterlegten WLANs zuerst benutzt wird (geht auch mit Menü-Modus 7) |
 
 Außerdem gibt es Buttons für **Vorschau** und **LED-Test** sowie das **Drift-Protokoll** (siehe unten).
 
@@ -100,7 +122,7 @@ In der Maske sind zwei WLANs hinterlegt:
 - **WLAN 1** ist das Standard-WLAN.
 - **WLAN 2** ist das Repeater-WLAN im Schlafzimmer.
 
-Die Maske versucht immer zuerst das gewählte WLAN. Klappt das nicht, probiert sie automatisch das andere. Umschalten geht mit Menü-Modus 6 oder auf der Einstellungsseite.
+Die Maske versucht immer zuerst das gewählte WLAN. Klappt das nicht, probiert sie automatisch das andere. Umschalten geht mit Menü-Modus 7 oder auf der Einstellungsseite.
 
 ## Uhr-Test (Drift-Protokoll)
 

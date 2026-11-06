@@ -257,6 +257,26 @@ void clearLEDs() {
   strip.show();
 }
 
+// Stunden auf beiden Ringen. Ein Ring fasst 8 LEDs: ab der 9. Stunde wechselt die Farbe
+// auf rot und zählt von vorn (7 h = 7 orange, 9 h = 1 rot, 16 h = 8 rot, 17 h = 1 orange).
+// zeroMarker: 0 als eine weiße LED zeigen statt dunkel (beim Einstellen, damit man etwas sieht)
+void showHours(int hours, bool zeroMarker) {
+  if (hours <= 0) {
+    if (zeroMarker) showRings(1, 255, 255, 255, 0.4f);
+    else            clearLEDs();
+    return;
+  }
+  int n = (hours - 1) % LEDS_PER_RING + 1;
+  if (((hours - 1) / LEDS_PER_RING) % 2 == 0) showRings(n, 255, 100, 0, 0.6f);   // orange
+  else                                         showRings(n, 255, 0, 0, 0.6f);     // rot
+}
+
+// Minuten in 10er-Schritten als blaue LEDs auf beiden Ringen (zeroMarker wie bei showHours)
+void showTenMinutes(int tens, bool zeroMarker) {
+  if (tens <= 0 && zeroMarker) showRings(1, 255, 255, 255, 0.4f);
+  else                         showRings(tens, 0, 80, 255, 0.6f);
+}
+
 void blink(uint8_t r, uint8_t g, uint8_t b, int times) {
   for (int i = 0; i < times; i++) {
     setStripColor(r, g, b, 0.6f);
@@ -676,15 +696,11 @@ void showStatus(TimeSource source) {
 
   clearLEDs();
   delay(300);
-  // Ein Ring fasst 8 LEDs: ab der 9. Stunde wechselt die Farbe auf rot und zählt von vorn
-  // (7 h = 7 orange, 9 h = 1 rot, 16 h = 8 rot, 17 h = 1 orange)
-  int hourLeds = hours == 0 ? 0 : (hours - 1) % LEDS_PER_RING + 1;
-  if (((hours - 1) / LEDS_PER_RING) % 2 == 0) showRings(hourLeds, 255, 100, 0, 0.6f);   // orange: Stunden
-  else                                         showRings(hourLeds, 255, 0, 0, 0.6f);     // rot: Stunden ab 9
+  showHours(hours, false);           // orange/rot: Stunden
   delay(4000);
   clearLEDs();
   delay(300);
-  showRings(tenMinutes, 0, 80, 255, 0.6f);    // blau: 10-Minuten-Schritte
+  showTenMinutes(tenMinutes, false); // blau: 10-Minuten-Schritte
   delay(3000);
   clearLEDs();
 }
@@ -924,7 +940,7 @@ void runSettingsServer() {
 // TESTMENÜ
 // ==========================================
 
-// Modus 2: alle Farben, jede LED einzeln (tote LEDs / Unterbrechungen), dann Volllast.
+// Modus 3: alle Farben, jede LED einzeln (tote LEDs / Unterbrechungen), dann Volllast.
 // Startet das Board bei Volllast neu, reicht die Stromversorgung nicht.
 void runLedTest() {
   Serial.println("[TEST] LED-Test: Farben");
@@ -955,7 +971,7 @@ void runLedTest() {
   Serial.println("[TEST] LED-Test fertig.");
 }
 
-// Modus 5: Wecker an/aus umschalten, neuer Zustand 2 s lang grün (an) oder rot (aus)
+// Modus 6: Wecker an/aus umschalten, neuer Zustand 2 s lang grün (an) oder rot (aus)
 void toggleAlarmEnabled() {
   cfg.enabled = !cfg.enabled;
   saveSettings();
@@ -965,7 +981,7 @@ void toggleAlarmEnabled() {
   clearLEDs();
 }
 
-// Modus 6: bevorzugtes WLAN wechseln, danach 2 s lang so viele grüne LEDs wie die Nummer des WLANs
+// Modus 7: bevorzugtes WLAN wechseln, danach 2 s lang so viele grüne LEDs wie die Nummer des WLANs
 void switchWifi() {
   cfg.wifiIndex = (cfg.wifiIndex + 1) % WIFI_COUNT;
   saveSettings();
@@ -975,11 +991,66 @@ void switchWifi() {
   clearLEDs();
 }
 
+// Modus 2: Weckzeit direkt an der Maske einstellen, ohne Handy.
+// Erst Stunden (0–16, Anzeige wie bei showHours), dann Minuten in 10er-Schritten (blau).
+// Kurz = +1, lang = übernehmen. Weiße LED = 0. 15 s ohne Tastendruck = abbrechen, nichts gespeichert.
+// true = neue Weckzeit gespeichert.
+bool setAlarmOnDevice() {
+  const int MAX_HOUR = 16;   // mehr Stunden lassen sich mit 2 Farben × 8 LEDs nicht eindeutig zeigen
+  int hour = min(cfg.alarmHour, MAX_HOUR);
+  int tens = cfg.alarmMinute / 10;
+  Serial.printf("[SET] Weckzeit einstellen, bisher %02d:%02d\n", cfg.alarmHour, cfg.alarmMinute);
+
+  blink(255, 100, 0, 1);   // orange: jetzt Stunden
+  while (true) {
+    showHours(hour, true);
+    ButtonEvent ev = waitForButton(MENU_TIMEOUT_MS);
+    if (ev == BTN_NONE) {
+      Serial.println("[SET] Abgebrochen.");
+      clearLEDs();
+      return false;
+    }
+    if (ev == BTN_LONG) break;
+    hour = (hour + 1) % (MAX_HOUR + 1);
+  }
+
+  blink(0, 80, 255, 1);    // blau: jetzt Minuten
+  while (true) {
+    showTenMinutes(tens, true);
+    ButtonEvent ev = waitForButton(MENU_TIMEOUT_MS);
+    if (ev == BTN_NONE) {
+      Serial.println("[SET] Abgebrochen.");
+      clearLEDs();
+      return false;
+    }
+    if (ev == BTN_LONG) break;
+    tens = (tens + 1) % 6;
+  }
+
+  cfg.alarmHour = hour;
+  cfg.alarmMinute = tens * 10;
+  cfg.enabled = true;    // wer eine Weckzeit stellt, will geweckt werden
+  cfg.skipStart = 0;
+  saveSettings();
+  Serial.printf("[SET] Neue Weckzeit %02d:%02d, Wecker an\n", cfg.alarmHour, cfg.alarmMinute);
+
+  // Bestätigung: grün, dann die neue Zeit noch einmal zum Ablesen
+  blink(0, 255, 0, 2);
+  showHours(hour, true);
+  delay(2000);
+  clearLEDs();
+  delay(300);
+  showTenMinutes(tens, true);
+  delay(2000);
+  clearLEDs();
+  return true;
+}
+
 // Testmenü: Modus = Anzahl hellblauer LEDs. Kurz drücken = nächster Modus, lang = starten.
 MenuResult runTestMenu() {
-  const int MODE_COUNT = 6;
+  const int MODE_COUNT = 7;
   int mode = 1;
-  Serial.println("[MENU] 1 = Einstellungen, 2 = LED-Test, 3 = Zeitraffer, 4 = Probelauf, 5 = Wecker an/aus, 6 = WLAN wechseln");
+  Serial.println("[MENU] 1 = Einstellungen, 2 = Weckzeit am Geraet, 3 = LED-Test, 4 = Zeitraffer, 5 = Probelauf, 6 = Wecker an/aus, 7 = WLAN wechseln");
   blink(0, 180, 255, 2);   // Menü erkannt
 
   while (true) {
@@ -999,11 +1070,12 @@ MenuResult runTestMenu() {
 
     switch (mode) {
       case 1: runSettingsServer(); return MENU_NORMAL;
-      case 2: runLedTest(); break;
-      case 3: runSunriseAlarm(0, true); break;
-      case 4: return MENU_TRIAL;
-      case 5: toggleAlarmEnabled(); break;
-      case 6: switchWifi(); break;
+      case 2: if (setAlarmOnDevice()) return MENU_NORMAL; break;
+      case 3: runLedTest(); break;
+      case 4: runSunriseAlarm(0, true); break;
+      case 5: return MENU_TRIAL;
+      case 6: toggleAlarmEnabled(); break;
+      case 7: switchWifi(); break;
     }
   }
 }
