@@ -37,14 +37,24 @@ const int DEFAULT_DAYLIGHT_MINUTES = 30;   // Dauer des pulsierenden Lichts nach
 const int DEFAULT_MAX_BRIGHTNESS   = 76;   // Obergrenze pro Farbkanal (0-255)
 
 const int WAKE_MARGIN_SEC = 120;   // So viel früher aufwachen (WLAN/NTP-Sync)
-// Nacht-Abgleich: Längeren Schlaf teilen, nach 90 % aufwachen und die Uhr per WLAN nachstellen,
-// weil der interne Takt im Deep Sleep driften kann.
-// TEST (seit 29.09.2026): abgeschaltet, um die echte Abweichung zu messen. Die Messwerte stehen im
-// Drift-Protokoll (Einstellungsseite / serielle Ausgabe). Ist die Abweichung zu groß, wieder auf true setzen.
-const bool DRIFT_CHECK_ENABLED = false;
-const int DRIFT_CHECK_MIN_SEC = 3600; // Nacht-Abgleich nur bei Schlaf über 1 h
-const int DRIFT_LOG_MIN_SEC   = 1800; // Drift-Protokoll: nur Abgleiche nach mindestens 30 min ohne Sync
-const int DRIFT_LOG_SIZE      = 30;   // so viele Messungen werden aufgehoben (Ringpuffer)
+// Two-stage sleep: the long sleep ends PRE_WAKE_LEAD_SEC before the sunrise start. The mask then syncs
+// the clock over WiFi/NTP, writes the measured drift to the log and sleeps the short rest exactly.
+// Background: the internal RTC slow clock (150 kHz RC) runs a few percent fast in deep sleep,
+// so without a sync the alarm would come minutes too early.
+const bool PRE_WAKE_ENABLED = true;
+const int PRE_WAKE_LEAD_SEC = 15 * 60;        // pre-wake this long before the sunrise start
+const int PRE_WAKE_RETRY_SEC = 5 * 60;        // failed sync: try again after this much deep sleep ...
+const int PRE_WAKE_MIN_LEFT_SEC = 3 * 60;     // ... as long as at least this much time is left before the start
+const int PRE_WAKE_WIFI_TIMEOUT_MS = 10000;   // per network, keeps the battery drain of a failed try small
+const int CLOCK_FRESH_SEC = PRE_WAKE_LEAD_SEC + 5 * 60;   // synced this recently = no WiFi needed at the final wake
+
+// Drift log and correction model (used when no sync is possible)
+const int DRIFT_LOG_MIN_SEC   = 1800; // drift log: only syncs after at least 30 min without sync
+const int DRIFT_LOG_SIZE      = 30;   // number of kept entries (ring buffer)
+const int DRIFT_MODEL_MIN_ENTRIES = 5;       // fewer measurements: use the default rate
+const float DRIFT_DEFAULT_RATE = 0.005f;     // 0.5 % without data
+const float DRIFT_MAX_RATE = 0.03f;          // correction never exceeds 3 % of the sleep time
+const int DRIFT_MODEL_MIN_SPREAD_SEC = 4 * 3600;   // offset + rate fit needs at least this spread in interval length
 
 // Testmenü: nach RESET innerhalb von MENU_WINDOW_MS die BOOT-Taste drücken
 const unsigned long MENU_WINDOW_MS  = 3000;   // gleichzeitig Upload-Fenster für USB
@@ -60,17 +70,47 @@ RTC_DATA_ATTR time_t rtcHandledSunrise = 0;   // Start des zuletzt gespielten/ü
 RTC_DATA_ATTR time_t rtcTrialStart = 0;       // Probelauf aus dem Testmenü, 0 = keiner
 RTC_DATA_ATTR time_t rtcLastSyncEpoch = 0;    // Zeitpunkt des letzten erfolgreichen NTP-Abgleichs
 
+// What the next timer wake-up is for (set before every deep sleep)
+const uint8_t WAKE_FINAL = 0;      // wake shortly before the sunrise start
+const uint8_t WAKE_PRE_SYNC = 1;   // pre-wake: sync the clock, then sleep on
+RTC_DATA_ATTR uint8_t rtcWakeKind = WAKE_FINAL;
+RTC_DATA_ATTR time_t rtcPreWakeFor = 0;          // sunrise start the pre-wake sequence works towards
+RTC_DATA_ATTR uint8_t rtcPreSyncAttempts = 0;    // failed or done sync tries of this sequence
+RTC_DATA_ATTR int32_t rtcSleepCorrectionSec = 0; // extra sleep time to subtract from the clock after the wake-up
+RTC_DATA_ATTR int32_t rtcClockCorrectionSec = 0; // total subtracted from the clock since the last NTP sync
+
 // Vor der ersten Funktion, weil die Arduino-IDE dort die Funktionsprototypen einfügt
 enum TimeSource { TIME_NONE, TIME_RTC, TIME_NTP };
 enum ButtonEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
 enum MenuResult { MENU_NORMAL, MENU_TRIAL };
 enum WebAction { WEB_NONE, WEB_LED_TEST, WEB_PREVIEW, WEB_DONE };
 
-// Eine Messung im Drift-Protokoll: Wie weit lag die interne Uhr beim NTP-Abgleich daneben?
+// One measurement in the drift log: how far off was the internal clock at the NTP sync?
+// elapsedSec and offsetMs always describe the raw clock, i.e. without the corrections
+// the firmware applied itself (rtcClockCorrectionSec), so the log stays comparable.
+const uint8_t DRIFT_PRE_SYNC = 1;      // the sync was a pre-wake sync
+const uint8_t DRIFT_SYNC_FAILED = 2;   // pre-wake gave up without a sync, no measurement (offsetMs = 0)
 struct DriftEntry {
-  int64_t syncTime;    // Zeitpunkt des Abgleichs (Unixzeit)
-  int32_t elapsedSec;  // Zeit seit dem vorherigen Abgleich
-  int32_t offsetMs;    // NTP minus interne Uhr: > 0 = interne Uhr ging nach (Wecker käme zu spät)
+  int64_t syncTime;    // time of the sync (Unix time)
+  int32_t elapsedSec;  // time since the previous sync
+  int32_t offsetMs;    // NTP minus internal clock: < 0 = internal clock ran fast (alarm would come too early)
+  uint8_t flags;       // DRIFT_*
+  uint8_t attempts;    // pre-wake: number of the try that worked or number of failed tries
+  uint16_t reserved;
+};
+// Layout until the pre-wake sync was added (stored under the key "log")
+struct DriftEntryV1 {
+  int64_t syncTime;
+  int32_t elapsedSec;
+  int32_t offsetMs;
+};
+
+// Correction model, see fitDriftModel()
+struct DriftModel {
+  float offsetSec;
+  float rate;        // seconds of error per second of sleep
+  bool learned;      // false = default rate, no log data
+  int count;         // measurements used
 };
 
 // ==========================================
@@ -136,9 +176,25 @@ void saveSettings() {
 // ==========================================
 
 int loadDriftLog(DriftEntry *entries) {
-  prefs.begin("drift", true);
-  int count = min((int)(prefs.getBytesLength("log") / sizeof(DriftEntry)), DRIFT_LOG_SIZE);
-  if (count > 0) prefs.getBytes("log", entries, count * sizeof(DriftEntry));
+  prefs.begin("drift", false);
+  int count = min((int)(prefs.getBytesLength("log2") / sizeof(DriftEntry)), DRIFT_LOG_SIZE);
+  if (count > 0) {
+    prefs.getBytes("log2", entries, count * sizeof(DriftEntry));
+  } else if (prefs.getBytesLength("log") > 0) {
+    // Migrate the old log once so earlier measurements are kept
+    DriftEntryV1 old[DRIFT_LOG_SIZE];
+    int oldCount = min((int)(prefs.getBytesLength("log") / sizeof(DriftEntryV1)), DRIFT_LOG_SIZE);
+    prefs.getBytes("log", old, oldCount * sizeof(DriftEntryV1));
+    for (int i = 0; i < oldCount; i++) {
+      memset(&entries[i], 0, sizeof(DriftEntry));
+      entries[i].syncTime = old[i].syncTime;
+      entries[i].elapsedSec = old[i].elapsedSec;
+      entries[i].offsetMs = old[i].offsetMs;
+    }
+    count = oldCount;
+    prefs.putBytes("log2", entries, count * sizeof(DriftEntry));
+    prefs.remove("log");
+  }
   prefs.end();
   return count;
 }
@@ -153,14 +209,83 @@ void appendDriftLog(const DriftEntry &entry) {
   }
   entries[count++] = entry;
   prefs.begin("drift", false);
-  prefs.putBytes("log", entries, count * sizeof(DriftEntry));
+  prefs.putBytes("log2", entries, count * sizeof(DriftEntry));
   prefs.end();
 }
 
 void clearDriftLog() {
   prefs.begin("drift", false);
   prefs.remove("log");
+  prefs.remove("log2");
   prefs.end();
+}
+
+// --- Correction model -------------------------------------------------------
+// The clock runs fast, so a sleep of D seconds ends about err(D) seconds early in real time.
+// The model sleeps err(D) longer and sets the clock back afterwards. It is deliberately
+// cautious (an alarm a bit early is fine, a late one is not):
+//  - enough spread in the logged intervals: least-squares fit err = offset + rate * D, shifted
+//    down by the 10th percentile of its residuals, so ~90 % of the logged nights had at least this much error
+//  - otherwise: the 10th percentile of the error rates (error / interval), no offset
+//  - fewer than DRIFT_MODEL_MIN_ENTRIES measurements: DRIFT_DEFAULT_RATE
+// p in [0,1], v is sorted in place
+float percentile(float *v, int n, float p) {
+  for (int i = 1; i < n; i++) {
+    float x = v[i];
+    int j = i - 1;
+    while (j >= 0 && v[j] > x) { v[j + 1] = v[j]; j--; }
+    v[j + 1] = x;
+  }
+  return v[(int)(p * (n - 1))];
+}
+
+DriftModel fitDriftModel() {
+  DriftEntry entries[DRIFT_LOG_SIZE];
+  int total = loadDriftLog(entries);
+  float x[DRIFT_LOG_SIZE], y[DRIFT_LOG_SIZE];   // interval in s, error in s (> 0 = clock ran fast)
+  int n = 0;
+  for (int i = 0; i < total; i++) {
+    if ((entries[i].flags & DRIFT_SYNC_FAILED) || entries[i].elapsedSec <= 0) continue;
+    x[n] = entries[i].elapsedSec;
+    y[n] = -entries[i].offsetMs / 1000.0f;
+    n++;
+  }
+
+  DriftModel m = { 0, DRIFT_DEFAULT_RATE, false, n };
+  if (n < DRIFT_MODEL_MIN_ENTRIES) return m;
+  m.learned = true;
+
+  float xMin = x[0], xMax = x[0], xMean = 0, yMean = 0;
+  for (int i = 0; i < n; i++) {
+    xMin = min(xMin, x[i]); xMax = max(xMax, x[i]);
+    xMean += x[i] / n; yMean += y[i] / n;
+  }
+
+  if (xMax - xMin >= DRIFT_MODEL_MIN_SPREAD_SEC) {
+    float sxy = 0, sxx = 0;
+    for (int i = 0; i < n; i++) { sxy += (x[i] - xMean) * (y[i] - yMean); sxx += (x[i] - xMean) * (x[i] - xMean); }
+    float slope = sxy / sxx;
+    float offset = yMean - slope * xMean;
+    float res[DRIFT_LOG_SIZE];
+    for (int i = 0; i < n; i++) res[i] = y[i] - (offset + slope * x[i]);
+    m.offsetSec = offset + percentile(res, n, 0.1f);
+    m.rate = slope;
+  } else {
+    float rates[DRIFT_LOG_SIZE];
+    for (int i = 0; i < n; i++) rates[i] = y[i] / x[i];
+    m.rate = percentile(rates, n, 0.1f);
+  }
+  return m;
+}
+
+// Seconds a sleep of sleepSec should be extended by (0 .. DRIFT_MAX_RATE of the sleep time)
+int32_t driftCorrectionSec(uint64_t sleepSec, const DriftModel &m) {
+  // The fit only knows nights and days. A fixed offset must not be applied to short sleeps
+  // (pre-wake retries, final stretch): use the default rate there, close to the lowest rate ever measured.
+  if (sleepSec < 3600) return (int32_t)(DRIFT_DEFAULT_RATE * sleepSec);
+  float c = m.offsetSec + m.rate * sleepSec;
+  c = constrain(c, 0.0f, DRIFT_MAX_RATE * sleepSec);
+  return (int32_t)c;
 }
 
 // Abweichung hochgerechnet auf 8 Stunden Schlaf, in Sekunden
@@ -168,17 +293,25 @@ float driftPer8h(const DriftEntry &e) {
   return e.elapsedSec > 0 ? (e.offsetMs / 1000.0f) * (8 * 3600.0f / e.elapsedSec) : 0;
 }
 
+// Pre-wake column of the drift log
+String preWakeText(const DriftEntry &e) {
+  if (e.flags & DRIFT_SYNC_FAILED) return "Pre-Wake fehlgeschlagen (" + String(e.attempts) + " Versuche)";
+  if (e.flags & DRIFT_PRE_SYNC) return "Pre-Wake ok (Versuch " + String(e.attempts) + ")";
+  return "-";
+}
+
 void printDriftLog() {
   DriftEntry entries[DRIFT_LOG_SIZE];
   int count = loadDriftLog(entries);
-  Serial.printf("[DRIFT] %d Messungen (Abweichung > 0 = interne Uhr ging nach)\n", count);
+  Serial.printf("[DRIFT] %d Messungen (Abweichung < 0 = interne Uhr ging vor)\n", count);
   for (int i = 0; i < count; i++) {
     time_t t = (time_t)entries[i].syncTime;
     struct tm tm;
     localtime_r(&t, &tm);
-    Serial.printf("[DRIFT] %02d.%02d. %02d:%02d  nach %5.1f h: %+7.1f s  (%+6.1f s pro 8 h)\n",
+    Serial.printf("[DRIFT] %02d.%02d. %02d:%02d  nach %5.1f h: %+7.1f s  (%+6.1f s pro 8 h)  %s\n",
                   tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min,
-                  entries[i].elapsedSec / 3600.0f, entries[i].offsetMs / 1000.0f, driftPer8h(entries[i]));
+                  entries[i].elapsedSec / 3600.0f, entries[i].offsetMs / 1000.0f, driftPer8h(entries[i]),
+                  preWakeText(entries[i]).c_str());
   }
 }
 
@@ -367,7 +500,7 @@ bool systemTimeValid() {
 // showProgress: Die Ringe füllen sich grün, während verbunden wird
 // (bis 6 LEDs beim WLAN-Verbinden, 7 = WLAN verbunden, 8 = Uhrzeit per NTP da).
 // Erst das gewählte WLAN, bei Fehlschlag die anderen aus WIFI_NETWORKS.
-bool connectWiFi(bool showProgress) {
+bool connectWiFi(bool showProgress, int timeoutMs = 15000) {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(HOSTNAME);
   connectedWifi = -1;
@@ -380,7 +513,7 @@ bool connectWiFi(bool showProgress) {
     WiFi.begin(WIFI_NETWORKS[idx][0], WIFI_NETWORKS[idx][1]);
 
     int timeout = 0;
-    while (WiFi.status() != WL_CONNECTED && timeout < 30) {
+    while (WiFi.status() != WL_CONNECTED && timeout < timeoutMs / 500) {
       if (showProgress) showRings(min(6, step / 4 + 1), 0, 255, 0, 0.5f);  // +1 LED alle 2 s
       delay(500);
       Serial.print(".");
@@ -412,27 +545,45 @@ void startNtp() {
   configTzTime(TIME_ZONE, NTP_SERVER);
 }
 
-// Nach erfolgreichem NTP-Abgleich: Abweichung der internen Uhr messen und ggf. protokollieren
-void recordClockDrift() {
+// After a successful NTP sync: measure the drift of the internal clock and log it if it is a long enough interval.
+// The measurement uses the raw clock, i.e. without the corrections the firmware applied itself.
+void recordClockDrift(uint8_t flags = 0, uint8_t attempts = 0) {
   if (clockBeforeSyncValid && rtcLastSyncEpoch != 0) {
     // Was die interne Uhr im Moment der NTP-Antwort angezeigt hätte
     int64_t internalMs = (int64_t)clockBeforeSync.tv_sec * 1000 + clockBeforeSync.tv_usec / 1000
                        + (int64_t)(ntpSyncMillis - clockBeforeSyncMillis);
+    int64_t rawInternalMs = internalMs + (int64_t)rtcClockCorrectionSec * 1000;
     int64_t ntpMs = (int64_t)ntpSyncTime.tv_sec * 1000 + ntpSyncTime.tv_usec / 1000;
 
-    DriftEntry e;
+    DriftEntry e = {};
     e.syncTime = ntpSyncTime.tv_sec;
-    e.elapsedSec = (int32_t)(internalMs / 1000 - rtcLastSyncEpoch);
-    e.offsetMs = (int32_t)(ntpMs - internalMs);
-    Serial.printf("[DRIFT] Abweichung %+.1f s nach %.1f h ohne Abgleich\n", e.offsetMs / 1000.0f, e.elapsedSec / 3600.0f);
+    e.elapsedSec = (int32_t)(rawInternalMs / 1000 - rtcLastSyncEpoch);
+    e.offsetMs = (int32_t)(ntpMs - rawInternalMs);
+    e.flags = flags;
+    e.attempts = attempts;
+    Serial.printf("[DRIFT] Abweichung %+.1f s nach %.1f h ohne Abgleich (Korrektur davon %d s, Rest %+.1f s)\n",
+                  e.offsetMs / 1000.0f, e.elapsedSec / 3600.0f, (int)rtcClockCorrectionSec,
+                  (ntpMs - internalMs) / 1000.0f);
     if (e.elapsedSec >= DRIFT_LOG_MIN_SEC) appendDriftLog(e);
   }
   rtcLastSyncEpoch = ntpSyncTime.tv_sec;
+  rtcClockCorrectionSec = 0;
 }
 
-bool syncTimeWithWiFi(bool showProgress) {
+// Pre-wake gave up: log that there was no sync this night (no measurement)
+void recordFailedPreWake(time_t now) {
+  if (rtcLastSyncEpoch == 0 || now <= rtcLastSyncEpoch) return;
+  DriftEntry e = {};
+  e.syncTime = now;
+  e.elapsedSec = (int32_t)(now + rtcClockCorrectionSec - rtcLastSyncEpoch);
+  e.flags = DRIFT_PRE_SYNC | DRIFT_SYNC_FAILED;
+  e.attempts = rtcPreSyncAttempts;
+  appendDriftLog(e);
+}
+
+bool syncTimeWithWiFi(bool showProgress, int wifiTimeoutMs = 15000, uint8_t driftFlags = 0, uint8_t attempt = 0) {
   bool ok = false;
-  if (connectWiFi(showProgress)) {
+  if (connectWiFi(showProgress, wifiTimeoutMs)) {
     Serial.println("\n[NTP] Hole Uhrzeit...");
     startNtp();
 
@@ -444,7 +595,7 @@ bool syncTimeWithWiFi(bool showProgress) {
       retry++;
     }
     ok = ntpSynced;
-    if (ok) recordClockDrift();
+    if (ok) recordClockDrift(driftFlags, attempt);
   }
 
   wifiOff();
@@ -518,7 +669,19 @@ time_t nextSunriseStart(time_t t) {
 // ==========================================
 
 // sleepSeconds = 0: ohne Timer schlafen, nur RESET weckt wieder (Wecker aus)
-void goToDeepSleep(uint64_t sleepSeconds) {
+// The sleep is extended by the learned drift correction (the clock runs fast, the wake-up would come
+// early otherwise); setup() sets the clock back by the same amount after the timer wake-up.
+// wakeKind: what the wake-up is for (WAKE_FINAL or WAKE_PRE_SYNC)
+void goToDeepSleep(uint64_t sleepSeconds, uint8_t wakeKind = WAKE_FINAL) {
+  rtcWakeKind = wakeKind;
+  rtcSleepCorrectionSec = 0;
+  if (sleepSeconds > 0 && systemTimeValid()) {
+    DriftModel model = fitDriftModel();
+    rtcSleepCorrectionSec = driftCorrectionSec(sleepSeconds, model);
+    Serial.printf("[SLEEP] Drift-Korrektur +%d s (%s, %d Messungen)\n", (int)rtcSleepCorrectionSec,
+                  model.learned ? "gelernt" : "Standard", model.count);
+  }
+
   Serial.println("==========================================");
   if (sleepSeconds > 0) {
     Serial.printf("[SLEEP] Gehe fuer %llu Sekunden (%.1f Std) in Deep Sleep...\n",
@@ -540,7 +703,7 @@ void goToDeepSleep(uint64_t sleepSeconds) {
 
   // Aufwachen per Timer
   if (sleepSeconds > 0) {
-    esp_sleep_enable_timer_wakeup(sleepSeconds * 1000000ULL);
+    esp_sleep_enable_timer_wakeup((sleepSeconds + rtcSleepCorrectionSec) * 1000000ULL);
   }
 
   // Aufwachen per Taste (LOW). Klappt auf dem ESP32-C3 nur an GPIO 0-5, an GPIO 9
@@ -552,23 +715,58 @@ void goToDeepSleep(uint64_t sleepSeconds) {
   esp_deep_sleep_start();
 }
 
+// Sleep until WAKE_MARGIN_SEC before the sunrise start. Wakes after 1 s if that time has already passed.
+void sleepUntilFinalWake(time_t start) {
+  time_t now = time(nullptr);
+  time_t wakeAt = start - WAKE_MARGIN_SEC;
+  goToDeepSleep(wakeAt > now ? wakeAt - now : 1, WAKE_FINAL);
+}
+
+// True if the clock was set by NTP within the last maxAgeSec
+bool clockSyncedRecently(time_t now, int maxAgeSec) {
+  return rtcLastSyncEpoch != 0 && now >= rtcLastSyncEpoch && now - rtcLastSyncEpoch < maxAgeSec;
+}
+
 void goToDeepSleepUntilNextSunrise() {
   time_t now = time(nullptr);
   time_t start = nextSunriseStart(now + WAKE_MARGIN_SEC + 1);
   if (start == 0) {
     goToDeepSleep(0);
   }
-  time_t wakeAt = start - WAKE_MARGIN_SEC;
   printTime("[SLEEP] Naechster Sonnenaufgang ab", start);
 
-  uint64_t sleepSeconds = wakeAt > now ? wakeAt - now : 1;
-  if (DRIFT_CHECK_ENABLED && sleepSeconds > DRIFT_CHECK_MIN_SEC) {
-    // Zwischenstopp: Selbst bei 10 % Drift wacht der Chip so noch vor dem Sonnenaufgang auf,
-    // holt die Uhrzeit neu und schläft den kurzen Rest dann genau. Die LEDs bleiben dabei aus.
-    sleepSeconds = sleepSeconds * 9 / 10;
-    Serial.println("[SLEEP] Zwischenstopp zum Nachstellen der Uhr eingeplant.");
+  // Stage 1: sleep until the pre-wake, unless the clock is fresh anyway or the start is close
+  time_t preWakeAt = start - PRE_WAKE_LEAD_SEC;
+  if (PRE_WAKE_ENABLED && preWakeAt - now > 60 && !clockSyncedRecently(now, CLOCK_FRESH_SEC)) {
+    rtcPreWakeFor = start;
+    rtcPreSyncAttempts = 0;
+    Serial.println("[SLEEP] Erst bis zum Pre-Wake (Uhr per WLAN nachstellen), dann bis zum Start.");
+    goToDeepSleep(preWakeAt - now, WAKE_PRE_SYNC);
   }
-  goToDeepSleep(sleepSeconds);
+  sleepUntilFinalWake(start);
+}
+
+// Runs at the pre-wake and its retries: sync the clock, then sleep on. Does not return.
+void runPreWakeSync() {
+  time_t start = rtcPreWakeFor;
+  uint8_t attempt = rtcPreSyncAttempts + 1;
+  Serial.printf("[PREWAKE] Versuch %d, Start in %ld s\n", attempt, (long)(start - time(nullptr)));
+
+  if (syncTimeWithWiFi(false, PRE_WAKE_WIFI_TIMEOUT_MS, DRIFT_PRE_SYNC, attempt)) {
+    rtcPreSyncAttempts = 0;
+    sleepUntilFinalWake(start);
+  }
+
+  rtcPreSyncAttempts = attempt;
+  time_t now = time(nullptr);
+  if (start - (now + PRE_WAKE_RETRY_SEC) >= PRE_WAKE_MIN_LEFT_SEC) {
+    Serial.printf("[PREWAKE] Kein Sync, neuer Versuch in %d s.\n", PRE_WAKE_RETRY_SEC);
+    goToDeepSleep(PRE_WAKE_RETRY_SEC, WAKE_PRE_SYNC);
+  }
+  Serial.println("[PREWAKE] Kein Sync, gebe auf. Schlafe mit korrigierter interner Uhr weiter.");
+  recordFailedPreWake(now);
+  rtcPreSyncAttempts = 0;
+  sleepUntilFinalWake(start);
 }
 
 // ==========================================
@@ -797,22 +995,47 @@ String driftLogHtml() {
     h += F("<small>Noch keine Messung. Gemessen wird beim Aufwachen morgens, wenn die Maske ihre Uhr per WLAN abgleicht.</small>");
   } else {
     float sum = 0;
+    int measured = 0;
     h += F("<table style='width:100%;font-size:15px;margin-top:8px'><tr><th align=left>Abgleich</th>"
-           "<th align=right>nach</th><th align=right>Abw.</th><th align=right>pro 8 h</th></tr>");
+           "<th align=right>nach</th><th align=right>Abw.</th><th align=right>pro 8 h</th><th align=right>Pre-Wake</th></tr>");
     for (int i = count - 1; i >= 0; i--) {
       time_t t = (time_t)entries[i].syncTime;
       struct tm tm;
       localtime_r(&t, &tm);
-      float per8h = driftPer8h(entries[i]);
-      sum += per8h;
+      bool failed = entries[i].flags & DRIFT_SYNC_FAILED;
+      String preWake = failed ? "<span style='color:#c33'>fehlgeschlagen</span>"
+                     : (entries[i].flags & DRIFT_PRE_SYNC) ? "ok" : "&ndash;";
+      if (entries[i].attempts > 1) preWake += " (" + String(entries[i].attempts) + ". Versuch)";
+      String offset = "&ndash;", per8h = "&ndash;";
+      if (!failed) {
+        float v = driftPer8h(entries[i]);
+        sum += v;
+        measured++;
+        offset = String(entries[i].offsetMs / 1000.0f, 1) + " s";
+        per8h = String(v, 1) + " s";
+      }
       h += "<tr><td>" + twoDigits(tm.tm_mday) + "." + twoDigits(tm.tm_mon + 1) + ". " +
            twoDigits(tm.tm_hour) + ":" + twoDigits(tm.tm_min) + "</td><td align=right>" +
-           String(entries[i].elapsedSec / 3600.0f, 1) + " h</td><td align=right>" +
-           String(entries[i].offsetMs / 1000.0f, 1) + " s</td><td align=right>" +
-           String(per8h, 1) + " s</td></tr>";
+           String(entries[i].elapsedSec / 3600.0f, 1) + " h</td><td align=right>" + offset +
+           "</td><td align=right>" + per8h + "</td><td align=right>" + preWake + "</td></tr>";
     }
-    h += "</table><small>Mittel: " + String(sum / count, 1) + " s pro 8 h. Plus = interne Uhr ging nach "
-         "(Wecker w&auml;re zu sp&auml;t gekommen).</small>";
+    h += "</table>";
+    if (measured > 0) {
+      h += "<small>Mittel: " + String(sum / measured, 1) + " s pro 8 h. Minus = interne Uhr ging vor "
+           "(Wecker w&auml;re zu fr&uuml;h gekommen).</small>";
+    }
+
+    DriftModel model = fitDriftModel();
+    float per8hCorr = driftCorrectionSec(8 * 3600, model);
+    h += "<br><small>Aktueller Korrekturfaktor: <b>" + String(per8hCorr / (8 * 3600.0f) * 100, 2) + " %</b> bei 8 h Schlaf (" +
+         String(per8hCorr, 0) + " s) &ndash; ";
+    if (model.learned) {
+      h += "gelernt aus " + String(model.count) + " Messungen";
+      if (model.offsetSec != 0) h += ", Fest " + String(model.offsetSec, 0) + " s + " + String(model.rate * 3600 * 100, 2) + " % pro Stunde";
+      h += ".</small>";
+    } else {
+      h += "Standard, erst " + String(model.count) + " von " + String(DRIFT_MODEL_MIN_ENTRIES) + " Messungen.</small>";
+    }
     h += F("<form method='post' action='/action'><button name='a' value='clearlog'>Protokoll l&ouml;schen</button></form>");
   }
   h += F("</div>");
@@ -1096,6 +1319,23 @@ void setup() {
   tzset();
   loadSettings();
 
+  // Timer wake-up: the clock ran fast during the sleep, so set it back by the extra sleep time
+  // (see goToDeepSleep). After a reset or a button wake-up the real sleep length is unknown.
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER && rtcSleepCorrectionSec > 0 && systemTimeValid()) {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    tv.tv_sec -= rtcSleepCorrectionSec;
+    settimeofday(&tv, nullptr);
+    rtcClockCorrectionSec += rtcSleepCorrectionSec;
+    Serial.printf("[CLOCK] Uhr um %d s zurueckgestellt (Drift-Korrektur)\n", (int)rtcSleepCorrectionSec);
+  }
+  rtcSleepCorrectionSec = 0;
+  if (afterReset) {
+    rtcClockCorrectionSec = 0;
+    rtcWakeKind = WAKE_FINAL;
+    rtcPreSyncAttempts = 0;
+  }
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   ledPower(true);
@@ -1128,9 +1368,17 @@ void setup() {
     Serial.println("[WAKEUP] Durch Manuelle Taste aufgeweckt!");
   }
 
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER && rtcWakeKind == WAKE_PRE_SYNC && rtcPreWakeFor != 0) {
+    runPreWakeSync();   // does not return
+  }
+
   bool trialRequested = menuRequested && runTestMenu() == MENU_TRIAL;
 
-  TimeSource source = getValidTime(afterReset);
+  // Final wake-up shortly after a successful pre-wake sync: the clock is exact enough, no WiFi needed
+  bool skipSync = wakeup_reason == ESP_SLEEP_WAKEUP_TIMER && systemTimeValid()
+                  && clockSyncedRecently(time(nullptr), CLOCK_FRESH_SEC);
+  if (skipSync) Serial.println("[NTP] Uhr wurde vor kurzem abgeglichen, kein WLAN noetig.");
+  TimeSource source = skipSync ? TIME_NTP : getValidTime(afterReset);
   if (afterReset) {
     showStatus(source);
   }
