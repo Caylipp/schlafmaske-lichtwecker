@@ -36,9 +36,7 @@ USB abziehen, **RESET** drücken und nichts weiter anfassen:
 
 **Beispiel:** 22:00, Wecker 08:00 → grün → **10 orange** (erster Ring voll + 2 im zweiten) → **0 blau** = 10 h. Gute Nacht!
 
-Danach wird alles dunkel und die Maske schläft bis kurz vor dem Sonnenaufgang. Dann gleicht sie die Uhr übers WLAN ab. **Die LEDs bleiben dabei aus.**
-
-> **Zurzeit läuft ein Test:** Der zusätzliche Uhr-Abgleich mitten in der Nacht ist abgeschaltet. Siehe [Uhr-Test](#uhr-test-drift-protokoll).
+Danach wird alles dunkel und die Maske schläft bis kurz vor dem Sonnenaufgang. Dann gleicht sie die Uhr übers WLAN ab (15 Minuten vor dem Sonnenaufgang, bei Fehlschlag alle 5 Minuten neu). **Die LEDs bleiben dabei aus.**
 
 ### 3. Aufwachen
 - 30 Minuten vor der Weckzeit beginnt ein **Sonnenaufgang**: dunkelrot → orange → pfirsich → weiß.
@@ -126,11 +124,10 @@ Die Maske versucht immer zuerst das gewählte WLAN. Klappt das nicht, probiert s
 
 ## Uhr-Test (Drift-Protokoll)
 
-Die Maske hat keinen Uhrenquarz. Im Tiefschlaf kann ihre Uhr deshalb etwas vor- oder nachgehen. Um herauszufinden, wie viel, läuft gerade ein Test:
-- Der zusätzliche nächtliche Uhr-Abgleich ist **abgeschaltet**.
+Die Maske hat keinen Uhrenquarz. Im Tiefschlaf geht ihre Uhr deshalb etwas vor (zuletzt ca. 1–3 %). Darum:
+- Die Maske wacht 15 Minuten vor dem Sonnenaufgang auf und stellt die Uhr. Klappt das nicht, lernt sie aus dem Protokoll, wie viel die Uhr vorgeht, und schläft entsprechend länger.
 - Morgens beim Aufwachen gleicht die Maske ihre Uhr per WLAN ab und **speichert, wie weit sie danebenlag**. Die Werte bleiben auch nach RESET erhalten, bis zu 30 Messungen.
-- **Ansehen:** Menü-Modus 1, auf der Einstellungsseite unter **„Uhr-Abweichung (Test)“**. „Plus“ heißt: Die Uhr ging nach, der Wecker kam also so viele Sekunden zu spät.
-- Nach ein paar Nächten werten wir das gemeinsam aus. Ist die Abweichung klein (unter ~1 Minute pro Nacht), bleibt es so. Sonst wird der Nacht-Abgleich wieder eingeschaltet.
+- **Ansehen:** Menü-Modus 1, auf der Einstellungsseite unter **„Uhr-Abweichung (Test)“**. „Minus“ heißt: Die Uhr ging vor, der Wecker wäre also so viele Sekunden zu früh gekommen. Pro Eintrag steht, ob der Abgleich vor dem Sonnenaufgang geklappt hat, darunter der aktuelle Korrekturfaktor.
 
 Wichtig für eine saubere Messung: abends einmal **RESET** drücken (Abend-Check). Damit startet die Messung mit einer frisch gestellten Uhr.
 
