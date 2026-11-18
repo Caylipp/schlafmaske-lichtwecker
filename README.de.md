@@ -42,8 +42,10 @@ Einschalten / Aufwachen
   └─ steht der Sonnenaufgang in ≤ 2 min an (oder hat vor ≤ 30 min begonnen)?
         ja   ─> bis zum Start warten ─> Sonnenaufgang (bei Verspätung passend einsteigen)
         nein ─> nichts tun
-  └─ Deep Sleep bis 2 min vor dem nächsten Sonnenaufgang
-     (optional mit Zwischenstopp zum Nachstellen der Uhr, zurzeit für den Drift-Test abgeschaltet)
+  └─ Deep Sleep in zwei Stufen:
+     1. bis 15 min vor dem nächsten Sonnenaufgang (Pre-Wake): Uhr per WLAN/NTP stellen, Abweichung ins Protokoll;
+        schlägt das fehl, alle 5 min erneut, solange noch ≥ 3 min bis zum Start bleiben
+     2. bis 2 min vor dem Start (ohne WLAN, wenn der Abgleich frisch ist)
 ```
 
 **Ablauf des Weckers** mit den Standardwerten (Weckzeit 08:00):
@@ -133,7 +135,9 @@ Oben in `lichtwecker.ino` stehen nur noch Standardwerte und Hardware-Konstanten:
 | `DEFAULT_SUNRISE_MINUTES` / `DEFAULT_DAYLIGHT_MINUTES` | 30 / 30 | Sonnenaufgang vor, pulsierendes Licht nach der Weckzeit |
 | `DEFAULT_MAX_BRIGHTNESS` | 76 | Obergrenze pro Farbkanal (0–255) |
 | `WAKE_MARGIN_SEC` | 120 | so viel früher aufwachen, für WLAN/NTP |
-| `DRIFT_CHECK_ENABLED` | **`false`** (Test) | Nacht-Abgleich: längeren Schlaf (> `DRIFT_CHECK_MIN_SEC`) teilen und zwischendurch die Uhr nachstellen. Siehe [Drift-Test](#drift-test-läuft) |
+| `PRE_WAKE_ENABLED` | `true` | Zwei-Stufen-Schlaf mit Uhr-Abgleich vor dem Sonnenaufgang. Siehe [Uhr-Drift](#uhr-drift-und-pre-wake) |
+| `PRE_WAKE_LEAD_SEC` / `PRE_WAKE_RETRY_SEC` / `PRE_WAKE_MIN_LEFT_SEC` | 900 / 300 / 180 | Pre-Wake 15 min vor dem Start; Wiederholung alle 5 min, solange noch ≥ 3 min bleiben |
+| `PRE_WAKE_WIFI_TIMEOUT_MS` | 10000 | WLAN-Timeout pro Netz beim Pre-Wake |
 | `DRIFT_LOG_MIN_SEC` / `DRIFT_LOG_SIZE` | 1800 / 30 | Drift-Protokoll: nur Abgleiche nach ≥ 30 min, max. 30 Einträge |
 | `WEB_TIMEOUT_MS` | 5 min | so lange bleibt die Einstellungsseite ohne Aufruf online |
 | `LED_PIN`, `BUTTON_PIN`, `LED_POWER_PIN`, `NUM_LEDS`, `LEDS_PER_RING` | | Hardware |
@@ -158,16 +162,19 @@ Kurzfassung:
 
 **Empfohlen vor der ersten Nacht:** Modus 3 (LED-Test) und Modus 5 (Probelauf) **im Akkubetrieb** durchlaufen lassen. Nur so zeigt sich, ob die LEDs auch ohne USB genug Strom bekommen.
 
-## Drift-Test (läuft)
+## Uhr-Drift und Pre-Wake
 
-**Seit 29.09.2026** ist der Nacht-Abgleich (`DRIFT_CHECK_ENABLED = false`) abgeschaltet. So lässt sich messen, wie stark die interne Uhr des XIAO im Deep Sleep wirklich abweicht.
+Der interne Takt (RTC-Slow-Clock = interner 150-kHz-RC-Oszillator, `CONFIG_RTC_CLK_SRC_INT_RC`) geht im Deep Sleep vor: Messung vom 09.10.–17.11.2026, 20 Werte, alle negativ, im Mittel ca. 1,7 % (0,5–3,8 %). Der Fehler wächst nicht proportional zur Schlafdauer: Nächte mit getragener Maske (4,9–9 h) liegen bei ca. 2,8 %, 24-h-Intervalle bei ca. 1,1 %. Wahrscheinlichste Ursache ist die Temperatur: Die Kalibrierung gegen den Quarz passiert beim Aufwachen, der Oszillator läuft in der warmen Nacht am Gesicht aber schneller. Das ist aus den Daten nicht bewiesen.
+
+Deshalb stellt die Maske die Uhr jetzt kurz vor dem Sonnenaufgang (Pre-Wake) per NTP. Klappt das nicht, schläft sie mit einer gelernten Korrektur weiter:
+
+- **Korrekturmodell:** Aus dem Protokoll (ab 5 Messungen) wird Fehler = Festwert + Rate · Schlafdauer angepasst und um das 10. Perzentil der Abweichungen nach unten verschoben (lieber leicht zu früh als zu spät). Bei zu wenig Spreizung der Intervalle nur das 10. Perzentil der Rate. Ohne Daten 0,5 %. Gedeckelt auf 3 %, unter 1 h Schlaf immer 0,5 %. Der Schlaf wird um diesen Wert verlängert und die Uhr nach dem Aufwachen um denselben Wert zurückgestellt.
+- **Protokoll:** Die Werte sind immer die der unkorrigierten Uhr. Pro Eintrag steht, ob der Pre-Wake-Abgleich geklappt hat. Ein Eintrag „fehlgeschlagen“ hat keine Messung und zählt nicht fürs Modell.
+- **Nicht umgesetzt:** Neu-Kalibrieren der Slow-Clock direkt vor dem Schlaf (Wirkung ohne Hardwaretest unklar, würde die Basis des gelernten Modells verschieben). RTC-Quelle (8MD256 / externer Quarz) nicht umgestellt: das braucht eine andere Arduino-Core-Bibliothek.
 
 - **Messung:** Bei jedem NTP-Abgleich vergleicht `recordClockDrift()` die interne Uhr mit der NTP-Zeit, auf Millisekunden genau. War der letzte Abgleich mindestens 30 min her, wird das Ergebnis im Flash gespeichert (Namespace `drift`, Ringpuffer mit 30 Einträgen). Die wichtige Messung ist die morgens: Abend-Check per RESET → Nacht → Aufwachen vor dem Sonnenaufgang.
 - **Auslesen:** Einstellungsseite (Menü-Modus 1) → „Uhr-Abweichung (Test)“, oder die serielle Ausgabe nach RESET (`[DRIFT] …`).
-- **Auswertung:** Maßgeblich ist die Spalte „pro 8 h“. Plus heißt: Die Uhr ging nach, der Wecker kam zu spät.
-  - Unter ~±60 s pro Nacht: Der Nacht-Abgleich ist unnötig und kostet nur Akku.
-  - Deutlich mehr, oder mehr als die Kulanz (Sonnenaufgangsdauer): `DRIFT_CHECK_ENABLED = true` setzen.
-- **Wieder einschalten:** eine Zeile in `lichtwecker.ino`, der Code dafür ist unverändert vorhanden. Die Simulation für den eingeschalteten Zustand steht in [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.md) (Abschnitt 4).
+- **Auswertung:** Maßgeblich ist die Spalte „pro 8 h“. Minus heißt: Die Uhr ging vor, der Wecker wäre zu früh gekommen. Unter der Tabelle steht der aktuelle Korrekturfaktor.
 
 ## Änderungen in v1.1
 
@@ -186,7 +193,7 @@ Behoben aus dem Code-Review von v1:
 | Tastenweckung an GPIO 9 erzeugte einen Fehler (auf Hardware bestätigt) | Tastenweckung wird nur an gültigen Pins (GPIO 0–5) aktiviert |
 | Keine Möglichkeit, die LEDs im Schlaf stromlos zu schalten | optionaler `LED_POWER_PIN` |
 | 3 s `delay` bei jedem Aufwachen | nur noch nach Reset |
-| Ein langer Deep Sleep lief ohne Korrektur durch; der interne Takt driftet um einige Prozent, der Wecker kam dadurch zu spät oder fiel aus | Zwischenstopp nach 90 % des Schlafs zum Nachstellen der Uhr (**zurzeit für den Drift-Test abgeschaltet**); mehr Kulanz bei Verspätung (bis zur Sonnenaufgangsdauer) |
+| Ein langer Deep Sleep lief ohne Korrektur durch; der interne Takt driftet um einige Prozent, der Wecker kam dadurch zu spät oder fiel aus | Pre-Wake 15 min vor dem Start zum Nachstellen der Uhr, siehe [Uhr-Drift](#uhr-drift-und-pre-wake); mehr Kulanz bei Verspätung (bis zur Sonnenaufgangsdauer) |
 | Weckzeit nur durch Code-Änderung und Neu-Flashen einstellbar | Einstellungsseite (eigenes WLAN mit Captive Portal + `lichtwecker.local`), Wecker an/aus, nächsten Wecker aussetzen |
 | Nur ein WLAN fest im Code | Zwei WLANs in `secrets.h`, Auswahl über Menü/Seite, automatischer Ausweich auf das andere |
 | Testen nur über `TEST_MODE` und Neu-Flashen, sonst Warten bis zum Morgen | Statusanzeige nach jedem Reset und Testmenü per BOOT-Taste (LED-Test, Zeitraffer, Probelauf) |

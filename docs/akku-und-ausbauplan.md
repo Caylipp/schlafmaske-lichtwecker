@@ -162,7 +162,7 @@ Dein Ablauf: Die Maske ist zu Hause, du gehst ~22 Uhr ins Bett, machst den Abend
 
 | Idee | Nutzen | Aufwand |
 |---|---|---|
-| **Zwischenstopp gegen Uhrdrift** | Der interne Takt kann im Schlaf einige Prozent abweichen. Ohne Korrektur wäre der Wecker bei +3 % jeden Morgen ~10 min zu spät, bei +8 % fiele er oft aus. | eingebaut (Simulation: in allen Fällen pünktlich), **seit 29.09.2026 für den Drift-Test abgeschaltet** (`DRIFT_CHECK_ENABLED`, siehe README) |
+| **Zwischenstopp gegen Uhrdrift** | Der interne Takt kann im Schlaf einige Prozent abweichen. Ohne Korrektur wäre der Wecker bei +3 % jeden Morgen ~10 min zu spät, bei +8 % fiele er oft aus. | ersetzt durch den Pre-Wake 15 min vor dem Start (`PRE_WAKE_ENABLED`, siehe README, Abschnitt „Uhr-Drift und Pre-Wake“) |
 | Snooze | Taste kurz = 9 min Schlummern, lang = aus | klein |
 | Backup-Alarm mit dem aktiven Buzzer aus dem Kit | piept leise, falls man nach X min nicht per Taste bestätigt hat | klein (1 Pin) |
 | Eigener Taster an D2 | Abend-Check ohne RESET, Weckung direkt aus dem Deep Sleep | klein (Löten) |
