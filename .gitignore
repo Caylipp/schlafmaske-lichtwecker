@@ -11,3 +11,4 @@ build/
 # Editor / OS
 .vscode/
 .DS_Store
+tests/build/

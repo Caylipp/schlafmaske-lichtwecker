@@ -225,6 +225,16 @@ Details und Reihenfolge: [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.
 - Vibrationsmotor als Backup-Alarm
 - Später: Beschleunigungssensor für „Smart Wake“ im leichten Schlaf
 
+## Tests (ohne Maske)
+
+Die reine Logik (Weckzeit und Sonnenaufgang inkl. Mitternacht und Sommerzeit, Farb- und Helligkeitskurve mit Gamma, Aufwach-Entscheidung, Statusanzeige, Menü) steckt in `lichtwecker/lichtwecker_logic.h` ohne Arduino-Abhängigkeit und wird auf dem Rechner getestet:
+
+```bash
+tests/run.sh          # braucht nur clang++ (oder CXX=g++), ca. 1 s
+```
+
+Der Sketch benutzt dieselben Funktionen, ein grüner Testlauf gilt also auch für die Firmware. Auf der Maske selbst bleibt der Flash-Test offen.
+
 ## Projektstruktur
 
 ```
@@ -233,10 +243,15 @@ Details und Reihenfolge: [docs/akku-und-ausbauplan.md](docs/akku-und-ausbauplan.
 ├── BEDIENUNGSANLEITUNG.md      Bedienung im Alltag
 ├── concept.md              Produktidee, Bewertung, Ideen
 ├── .gitignore
+├── STAND.md                 aktueller Stand, nächste Schritte
+├── tests/
+│   ├── run.sh               Host-Unit-Tests (clang++)
+│   └── test_logic.cpp
 ├── docs/
 │   └── akku-und-ausbauplan.md   Akkulaufzeit, Akku-Überwachung, Umbau, Plan Einstellungsseite
 └── lichtwecker/
     ├── lichtwecker.ino     aktueller Sketch
+    ├── lichtwecker_logic.h reine Logik (getestet)
     ├── secrets.example.h   Vorlage für Zugangsdaten
     └── secrets.h           lokal, nicht versioniert
 ```

@@ -9,6 +9,7 @@
 #include "esp_sntp.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include "lichtwecker_logic.h"   // reine Logik, auf dem Rechner getestet (tests/run.sh)
 #include "secrets.h"            // WIFI_NETWORKS (Name + Passwort, bis zu mehreren), siehe secrets.example.h
 
 // ==========================================
@@ -165,7 +166,7 @@ void clearDriftLog() {
 
 // Abweichung hochgerechnet auf 8 Stunden Schlaf, in Sekunden
 float driftPer8h(const DriftEntry &e) {
-  return e.elapsedSec > 0 ? (e.offsetMs / 1000.0f) * (8 * 3600.0f / e.elapsedSec) : 0;
+  return lw::driftPer8h(e.offsetMs, e.elapsedSec);
 }
 
 void printDriftLog() {
@@ -184,7 +185,11 @@ void printDriftLog() {
 
 // Zu spät aufgewacht: bis zum Ende des Sonnenaufgangs wird noch passend eingestiegen
 int lateGraceSec() {
-  return cfg.sunriseMinutes * 60;
+  return lw::lateGraceSec(cfg.sunriseMinutes);
+}
+
+lw::AlarmParams alarmParams() {
+  return { cfg.alarmHour, cfg.alarmMinute, cfg.sunriseMinutes };
 }
 
 // ==========================================
@@ -218,13 +223,8 @@ void onNtpSync(struct timeval *tv) {
 // gammakorrigiert und auf die eingestellte Maximalhelligkeit begrenzt. Kein setBrightness(),
 // da das bei kleinen Werten Farbinformation verliert.
 uint32_t scaledColor(uint8_t r, uint8_t g, uint8_t b, float level) {
-  level = constrain(level, 0.0f, 1.0f);
-  float scale = powf(level, 2.2f) * cfg.maxBrightness / 255.0f;
-  uint8_t rr = (uint8_t)lroundf(r * scale);
-  uint8_t gg = (uint8_t)lroundf(g * scale);
-  uint8_t bb = (uint8_t)lroundf(b * scale);
-  if (level > 0.0f && rr == 0 && gg == 0 && bb == 0) rr = 1;  // ganz am Anfang schon ein Glimmen
-  return strip.Color(rr, gg, bb);
+  lw::Rgb c = lw::scaleColor(r, g, b, level, cfg.maxBrightness);
+  return strip.Color(c.r, c.g, c.b);
 }
 
 void setStripColor(uint8_t r, uint8_t g, uint8_t b, float level) {
@@ -266,9 +266,9 @@ void showHours(int hours, bool zeroMarker) {
     else            clearLEDs();
     return;
   }
-  int n = (hours - 1) % LEDS_PER_RING + 1;
-  if (((hours - 1) / LEDS_PER_RING) % 2 == 0) showRings(n, 255, 100, 0, 0.6f);   // orange
-  else                                         showRings(n, 255, 0, 0, 0.6f);     // rot
+  lw::HoursDisplay d = lw::hoursDisplay(hours, LEDS_PER_RING);
+  if (!d.red) showRings(d.count, 255, 100, 0, 0.6f);   // orange
+  else        showRings(d.count, 255, 0, 0, 0.6f);     // rot
 }
 
 // Minuten in 10er-Schritten als blaue LEDs auf beiden Ringen (zeroMarker wie bei showHours)
@@ -327,7 +327,7 @@ ButtonEvent waitForButton(unsigned long timeoutMs) {
     if (buttonPressed()) {
       unsigned long pressStart = millis();
       while (digitalRead(BUTTON_PIN) == LOW) {
-        if (millis() - pressStart >= LONG_PRESS_MS) {
+        if (lw::classifyPress(millis() - pressStart, LONG_PRESS_MS) == lw::PRESS_LONG) {
           setStripColor(255, 255, 255, 0.4f);
           waitForRelease();
           clearLEDs();
@@ -478,39 +478,19 @@ void printTime(const char *label, time_t t) {
                 tm.tm_mday, tm.tm_mon + 1, tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
-// Erster Sonnenaufgangs-Start (Weckzeit minus Sonnenaufgangsdauer) zum Zeitpunkt t oder danach.
-// mktime() normalisiert Tages-/Monatsüberläufe und Sommerzeit (tm_isdst = -1).
+// Die Berechnung steckt in lichtwecker_logic.h (getestet). Hier nur die Einstellungen eingesetzt.
 time_t sunriseStartAtOrAfter(time_t t) {
-  struct tm tm;
-  localtime_r(&t, &tm);
-  tm.tm_hour = cfg.alarmHour;
-  tm.tm_min = cfg.alarmMinute - cfg.sunriseMinutes;
-  tm.tm_sec = 0;
-  tm.tm_isdst = -1;
-  time_t start = mktime(&tm);
-  while (start < t) {
-    tm.tm_mday += 1;
-    tm.tm_isdst = -1;
-    start = mktime(&tm);
-  }
-  return start;
+  return lw::sunriseStartAtOrAfter(t, alarmParams());
 }
 
 // Nächster Sonnenaufgang, der wirklich stattfindet: 0 = Wecker aus, ausgesetzter Tag wird übersprungen
 time_t nextAlarmStart(time_t t) {
-  if (!cfg.enabled) return 0;
-  time_t start = sunriseStartAtOrAfter(t);
-  if (start == cfg.skipStart) start = sunriseStartAtOrAfter(start + 1);
-  return start;
+  return lw::nextAlarmStart(t, alarmParams(), cfg.enabled, cfg.skipStart);
 }
 
 // Wie nextAlarmStart, berücksichtigt aber einen anstehenden Probelauf
 time_t nextSunriseStart(time_t t) {
-  time_t start = nextAlarmStart(t);
-  if (rtcTrialStart >= t && (start == 0 || rtcTrialStart < start)) {
-    start = rtcTrialStart;
-  }
-  return start;
+  return lw::nextSunriseStart(t, alarmParams(), cfg.enabled, cfg.skipStart, rtcTrialStart);
 }
 
 // ==========================================
@@ -558,10 +538,9 @@ void goToDeepSleepUntilNextSunrise() {
   if (start == 0) {
     goToDeepSleep(0);
   }
-  time_t wakeAt = start - WAKE_MARGIN_SEC;
   printTime("[SLEEP] Naechster Sonnenaufgang ab", start);
 
-  uint64_t sleepSeconds = wakeAt > now ? wakeAt - now : 1;
+  uint64_t sleepSeconds = lw::sleepSecondsUntil(now, start, WAKE_MARGIN_SEC);
   if (DRIFT_CHECK_ENABLED && sleepSeconds > DRIFT_CHECK_MIN_SEC) {
     // Zwischenstopp: Selbst bei 10 % Drift wacht der Chip so noch vor dem Sonnenaufgang auf,
     // holt die Uhrzeit neu und schläft den kurzen Rest dann genau. Die LEDs bleiben dabei aus.
@@ -582,6 +561,7 @@ void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
   Serial.printf("\n[ALARM] >>> SONNENAUFGANG GESTARTET%s <<<\n", fast ? " (Zeitraffer)" : "");
   unsigned long startMillis = millis() - startOffsetMs;
   int currentPhase = -1;
+  unsigned long phase4Millis = 0;   // Beginn des Pulsierens
   const float S = cfg.sunriseMinutes;
 
   ledPower(true);
@@ -596,48 +576,21 @@ void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
     unsigned long elapsedMillis = millis() - startMillis;
     float elapsedMinutes = fast ? (elapsedMillis / 1000.0f) : (elapsedMillis / 60000.0f);
 
-    uint8_t r = 0, g = 0, b = 0;
-    float level = 0.0f;
-    int phase = 0;
-
-    // Farbverlauf in drei Abschnitten (50 % / 33 % / 17 % der Dauer),
-    // Helligkeit steigt gleichmäßig über den ganzen Sonnenaufgang.
-    if (elapsedMinutes < S * 0.5f) {
-      phase = 1;  // Rot -> Orange
-      float progress = elapsedMinutes / (S * 0.5f);
-      r = 255; g = (uint8_t)(progress * 100); b = 0;
-    }
-    else if (elapsedMinutes < S * 5.0f / 6.0f) {
-      phase = 2;  // Orange -> Pfirsich
-      float progress = (elapsedMinutes - S * 0.5f) / (S / 3.0f);
-      r = 255; g = 100 + (uint8_t)(progress * 80); b = (uint8_t)(progress * 100);
-    }
-    else if (elapsedMinutes < S) {
-      phase = 3;  // Pfirsich -> Weiß
-      float progress = (elapsedMinutes - S * 5.0f / 6.0f) / (S / 6.0f);
-      r = 255 - (uint8_t)(progress * 30); g = 180 + (uint8_t)(progress * 75); b = 100 + (uint8_t)(progress * 155);
-    }
-    else if (elapsedMinutes < S + cfg.daylightMinutes) {
-      phase = 4;  // Weckzeit erreicht: Weiß pulsierend
-      float pulse = (sinf(millis() / 400.0f) + 1.0f) / 2.0f;
-      r = 255; g = 255; b = 255;
-      level = 0.6f + pulse * 0.4f;
-    }
-    else {
+    float pulse = lw::pulseAt(currentPhase == 4 ? millis() - phase4Millis : 0);
+    lw::SunriseFrame f = lw::sunriseFrame(elapsedMinutes, S, cfg.daylightMinutes, pulse);
+    if (f.phase == 0) {
       Serial.println("[ALARM] Wecker automatisch beendet.");
       break;
     }
-
-    if (phase < 4) {
-      level = elapsedMinutes / S;
-    }
+    int phase = f.phase;
 
     if (phase != currentPhase) {
       currentPhase = phase;
+      if (phase == 4) phase4Millis = millis();
       Serial.printf("[PHASE] Wechsel zu Phase %d\n", currentPhase);
     }
 
-    setStripColor(r, g, b, level);
+    setStripColor(f.r, f.g, f.b, f.level);
     delay(30);
   }
 
@@ -650,7 +603,7 @@ void runSunriseAlarm(unsigned long startOffsetMs, bool fast) {
 
 // true, wenn morgen früh kein Wecker klingelt (Wecker aus oder nächster Termin ausgesetzt)
 bool noAlarmNext(time_t now) {
-  return !cfg.enabled || sunriseStartAtOrAfter(now) == cfg.skipStart;
+  return lw::noAlarmNext(now, alarmParams(), cfg.enabled, cfg.skipStart);
 }
 
 // Anzeige nach jedem Reset, direkt nach dem grünen Füllen beim WLAN-Verbinden:
@@ -686,13 +639,13 @@ void showStatus(TimeSource source) {
     return;
   }
 
-  time_t alarm = sunriseStartAtOrAfter(now) + cfg.sunriseMinutes * 60;
-  long remaining = (long)(alarm - now);
-  int hours = remaining / 3600;
-  int tenMinutes = (remaining % 3600) / 600;
+  time_t alarm = lw::alarmTimeOfStart(sunriseStartAtOrAfter(now), alarmParams());
+  lw::RemainingDisplay rem = lw::remainingDisplay((long)(alarm - now));
+  int hours = rem.hours;
+  int tenMinutes = rem.tenMinutes;
   printTime("[STATUS] Naechste Weckzeit:", alarm);
   Serial.printf("[STATUS] Zeitquelle: %s, noch %d Std. %d min\n",
-                source == TIME_NTP ? "NTP" : "RTC", hours, (int)((remaining % 3600) / 60));
+                source == TIME_NTP ? "NTP" : "RTC", hours, rem.minutes);
 
   clearLEDs();
   delay(300);
@@ -1011,7 +964,7 @@ bool setAlarmOnDevice() {
       return false;
     }
     if (ev == BTN_LONG) break;
-    hour = (hour + 1) % (MAX_HOUR + 1);
+    hour = lw::nextAlarmHour(hour, MAX_HOUR);
   }
 
   blink(0, 80, 255, 1);    // blau: jetzt Minuten
@@ -1024,7 +977,7 @@ bool setAlarmOnDevice() {
       return false;
     }
     if (ev == BTN_LONG) break;
-    tens = (tens + 1) % 6;
+    tens = lw::nextTenMinutes(tens);
   }
 
   cfg.alarmHour = hour;
@@ -1064,7 +1017,7 @@ MenuResult runTestMenu() {
       return MENU_NORMAL;
     }
     if (ev == BTN_SHORT) {
-      mode = mode % MODE_COUNT + 1;
+      mode = lw::nextMenuMode(mode, MODE_COUNT);
       continue;
     }
 
@@ -1150,26 +1103,27 @@ void setup() {
 
   // Anstehender Sonnenaufgang: Probelauf oder regulär (auch wenn er vor höchstens
   // lateGraceSec() hätte beginnen sollen). 0 = keiner.
-  bool trial = rtcTrialStart != 0 && now <= rtcTrialStart + lateGraceSec();
+  bool trial = lw::trialPending(now, rtcTrialStart, lateGraceSec());
   if (!trial) rtcTrialStart = 0;
   time_t start = 0;
   if (trial) start = rtcTrialStart;
   else if (cfg.enabled) start = sunriseStartAtOrAfter(now - lateGraceSec());
 
-  if (start == 0) {
+  lw::AlarmDecision decision = lw::decideAlarm(start, now, trial, cfg.skipStart, rtcHandledSunrise, WAKE_MARGIN_SEC);
+  if (decision == lw::ALARM_OFF) {
     Serial.println("[ALARM] Wecker ist aus.");
   }
-  else if (!trial && start == cfg.skipStart) {
+  else if (decision == lw::ALARM_SKIPPED) {
     Serial.println("[ALARM] Dieser Wecker ist ausgesetzt.");
     if (start - now <= WAKE_MARGIN_SEC) {
       cfg.skipStart = 0;   // erledigt, ab morgen wieder normal
       saveSettings();
     }
   }
-  else if (start == rtcHandledSunrise) {
+  else if (decision == lw::ALARM_HANDLED) {
     Serial.println("[ALARM] Heutiger Wecker wurde schon gespielt oder beendet.");
   }
-  else if (start - now <= WAKE_MARGIN_SEC) {
+  else if (decision == lw::ALARM_RUN) {
     printTime("[ALARM] Sonnenaufgang ab", start);
     rtcHandledSunrise = start;
     if (trial) rtcTrialStart = 0;
@@ -1187,7 +1141,7 @@ void setup() {
 
     if (!skipped) {
       now = time(nullptr);
-      unsigned long lateMs = (!trial && now > start) ? (unsigned long)(now - start) * 1000UL : 0;
+      unsigned long lateMs = lw::lateMillis(now, start, trial);
       if (lateMs > 0) Serial.printf("[ALARM] %lu s verspätet, steige passend ein.\n", lateMs / 1000);
       runSunriseAlarm(lateMs, trial);
     }

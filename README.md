@@ -29,3 +29,7 @@ Prototype. v1 ran on hardware (NTP sync, RTC fallback, timer wake-up, sunrise, b
 ## Build
 
 Arduino IDE or `arduino-cli`, board `esp32:esp32:XIAO_ESP32C3`. Copy `lichtwecker/secrets.example.h` to `secrets.h` and add your Wi-Fi credentials.
+
+## Tests
+
+The pure logic (alarm/sunrise times incl. midnight and DST, colour/brightness curve with gamma, wake-up decision, menu) lives in `lichtwecker/lichtwecker_logic.h` without Arduino dependencies. Run the host unit tests (needs only `clang++`, no hardware): `tests/run.sh`
